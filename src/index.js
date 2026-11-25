@@ -15,7 +15,19 @@ const SETUP = "setup-pstack"
 
 const DENY = { action: "*", resource: "*", effect: "deny" }
 const ALLOW = (action) => ({ action, resource: "*", effect: "allow" })
-const READ_ONLY = [DENY, ALLOW("read"), ALLOW("grep"), ALLOW("glob"), ALLOW("webfetch"), { action: "question", resource: "*", effect: "deny" }]
+// Read-only agents may read outside the workspace (to review worktrees), but never
+// write there: `external_directory` lets the read tools cross the location boundary,
+// while the deny base still blocks edit/write/shell/subagent. A fixed worktree root
+// would let this be scoped to one directory; the port has none, so it is `*`.
+const READ_ONLY = [
+  DENY,
+  ALLOW("read"),
+  ALLOW("grep"),
+  ALLOW("glob"),
+  ALLOW("webfetch"),
+  ALLOW("external_directory"),
+  { action: "question", resource: "*", effect: "deny" },
+]
 const COMMENT_SICKO = [...READ_ONLY, ALLOW("skill")]
 
 // readonly: true has no OpenCode flag. It maps to this agent. The deny base hides

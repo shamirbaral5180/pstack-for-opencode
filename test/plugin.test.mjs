@@ -411,11 +411,12 @@ test("agents are subagents and read-only agents deny writes and subagents", asyn
     const agent = registered.agents.find((item) => item.id === id)
     assert.ok(agent, `${id} must exist`)
     assert.ok(agent.permissions.some((rule) => rule.action === "*" && rule.effect === "deny"))
-    for (const action of ["read", "grep", "glob", "webfetch"]) {
+    for (const action of ["read", "grep", "glob", "webfetch", "external_directory"]) {
       assert.ok(agent.permissions.some((rule) => rule.action === action && rule.effect === "allow"))
     }
-    assert.ok(!agent.permissions.some((rule) => rule.action === "subagent" && rule.effect === "allow"))
-    assert.ok(!agent.permissions.some((rule) => rule.action === "edit" && rule.effect === "allow"))
+    for (const action of ["subagent", "edit", "shell", "write", "patch"]) {
+      assert.ok(!agent.permissions.some((rule) => rule.action === action && rule.effect === "allow"))
+    }
   }
 })
 

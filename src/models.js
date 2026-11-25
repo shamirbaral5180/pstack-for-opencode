@@ -70,8 +70,9 @@ export function formatCatalog(catalog, currentRef) {
     const context = entry.context ? `context ${formatNumber(entry.context)}` : "context ?"
     const cost = entry.cost ? `$${entry.cost.input}/$${entry.cost.output} per Mtok` : "cost ?"
     const variants = entry.variants.length ? `variants: ${entry.variants.join(", ")}` : "no variants"
+    const family = entry.family ? `family ${entry.family}` : "family ?"
     const suffix = marks.length ? ` [${marks.join(", ")}]` : ""
-    return `- ${entry.ref} (${entry.name})${suffix} · ${context} · ${cost} · ${variants}`
+    return `- ${entry.ref} (${entry.name})${suffix} · ${family} · ${context} · ${cost} · ${variants}`
   })
   return [
     "<pstack_model_catalog>",

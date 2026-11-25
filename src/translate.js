@@ -19,7 +19,7 @@ import { vendorRoot } from "./paths.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
 
 const CACHE_BASE = join(homedir(), ".local", "share", "opencode", "pstack-translated")
-const TRANSLATION_VERSION = 15
+const TRANSLATION_VERSION = 17
 
 const SWARM_ORIGINAL =
   'Spawn all N workers in one message with `subagent_type: generalPurpose`, `environment: "cloud"`, `run_in_background: true`, and the step 3 model, left unset for `auto` or `inherit-parent`. Use `environment: "local"` only when the worker needs access to something on the user\'s computer.'
@@ -165,8 +165,8 @@ const TEXT_REPLACEMENTS = [
   ["`generalPurpose`", '`agent: "general"`'],
   ["generalPurpose", 'agent: "general"'],
   ["Task tool", "subagent tool"],
-  ["same family", "same provider"],
-  ["vendor check", "provider check"],
+  ["vendor check", "family check"],
+  ["same family", "same family"],
   ["spawn one readonly judge", 'spawn one judge with `agent: "pstack:readonly"`'],
   ["by default `inherit-parent`, `inherit-parent`", "using the sheet line"],
   ["by default `inherit-parent`", "using the sheet line"],
@@ -181,14 +181,14 @@ const TEXT_REPLACEMENTS = [
   ["Opus 5.5", "the code role model"],
   ["Fable 5.2", "the strongest configured model"],
   ["Gemini", "the configured provider"],
-  ["another vendor's model", "a different provider's model"],
+  ["another vendor's model", "a model from a different family"],
   [
     "Families go by prefix, and the longest match wins: `inherit-parent`, `inherit-parent`, and `inherit-parent`, after dropping a leading `cursor-`. Any other slug's family is its text before the first hyphen.",
-    "A family is the provider prefix of the ref, before the first `/`.",
+    "A family is the model's `family` from the catalog (the vendor, such as deepseek or glm); a model with no family uses its provider prefix.",
   ],
   [
     "The judge is never from the parent's vendor, and Fable counts as Claude for that check, so use the first entry from another vendor.",
-    "The judge is never from the parent's provider, so use the first entry whose provider prefix differs.",
+    "The judge is never from the parent's family, so use the first entry whose family differs.",
   ],
   [
     "by default `inherit-parent`, `inherit-parent`, and `inherit-parent`",

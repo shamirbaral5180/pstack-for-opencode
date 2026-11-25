@@ -444,4 +444,6 @@ test("catalog reports cost, context, status, and the current model", async () =>
   assert.ok(text.includes("$1/$2 per Mtok"))
   assert.ok(text.includes("[current]"))
   assert.ok(text.includes("[beta]"))
+  assert.ok(text.includes("family alpha"))
+  assert.ok(text.includes("family beta"))
 })

@@ -15,6 +15,24 @@ export function parseRef(ref) {
   return { providerID, id, ...(variant ? { variant } : {}) }
 }
 
+// OpenCode's per-model `family` is tier-granular (deepseek-pro vs deepseek-flash,
+// minimax-m-flash vs minimax-m). Collapse it to the vendor so two tiers of one
+// vendor count as the same family while different vendors stay distinct. A model
+// with no family field falls back to its provider prefix.
+const FAMILY_TIER = /-(pro|flash|free|small|large|code|ultra|super|nano|lightning|spark|m)$/
+
+export function vendorFamily(model) {
+  const raw = model.family
+  if (raw === undefined || raw === null || raw === "") return String(model.providerID)
+  let family = String(raw)
+  let previous
+  do {
+    previous = family
+    family = family.replace(FAMILY_TIER, "")
+  } while (family !== previous)
+  return family || String(model.providerID)
+}
+
 export async function modelCatalog(ctx) {
   let result
   try {
@@ -36,7 +54,7 @@ export async function modelCatalog(ctx) {
       name: model.name ?? ref,
       providerID: String(model.providerID),
       id: String(model.modelID ?? model.id),
-      family: model.family ? String(model.family) : String(model.providerID),
+      family: vendorFamily(model),
       status: model.status ?? "active",
       context: model.limit?.context ?? model.context,
       cost: cost ? { input: Number(cost.input ?? 0), output: Number(cost.output ?? 0) } : undefined,

@@ -8,7 +8,7 @@ import plugin from "../src/index.js"
 import agents from "../src/data/agents.js"
 import commands from "../src/data/commands.js"
 import skills from "../src/data/skills.js"
-import { formatCatalog, modelCatalog } from "../src/models.js"
+import { formatCatalog, modelCatalog, vendorFamily } from "../src/models.js"
 import { MANDATE, SETUP_OVERRIDE, mapping } from "../src/overlay.js"
 import { portable, vendorRoot } from "../src/paths.js"
 import { ensureModelSheet } from "../src/setup.js"
@@ -446,4 +446,20 @@ test("catalog reports cost, context, status, and the current model", async () =>
   assert.ok(text.includes("[beta]"))
   assert.ok(text.includes("family alpha"))
   assert.ok(text.includes("family beta"))
+})
+
+test("vendorFamily collapses tier suffixes to one vendor", () => {
+  const provider = "ollama-cloud"
+  assert.equal(vendorFamily({ family: "deepseek-flash", providerID: provider }), "deepseek")
+  assert.equal(vendorFamily({ family: "deepseek-flash-free", providerID: provider }), "deepseek")
+  assert.equal(vendorFamily({ family: "deepseek-pro", providerID: provider }), "deepseek")
+  assert.equal(vendorFamily({ family: "glm-flash", providerID: provider }), "glm")
+  assert.equal(vendorFamily({ family: "glm", providerID: provider }), "glm")
+  assert.equal(vendorFamily({ family: "minimax-m-flash", providerID: provider }), "minimax")
+  assert.equal(vendorFamily({ family: "kimi-code", providerID: provider }), "kimi")
+  assert.equal(vendorFamily({ family: "nemotron-lightning-free", providerID: provider }), "nemotron")
+  assert.equal(vendorFamily({ family: "gpt-oss", providerID: provider }), "gpt-oss")
+  assert.equal(vendorFamily({ family: "mistral-large", providerID: provider }), "mistral")
+  // No family field falls back to the provider prefix.
+  assert.equal(vendorFamily({ providerID: "opencode" }), "opencode")
 })

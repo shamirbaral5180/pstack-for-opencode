@@ -5,15 +5,30 @@ const vendor = portable(vendorRoot)
 const models = portable(modelsPath)
 
 export const MAPPING = `<pstack_opencode_mapping>
-pstack content is installed unmodified from Lauren Tan's original pstack. Use this mapping only for tools, models, and paths.
+pstack content is installed unmodified from Lauren Tan's original pstack. Use this mapping only for tools, models, paths, and subagent fields.
 
-Tools: Read -> read. Bash -> shell. Grep -> grep. Glob -> glob. Edit -> edit. Write -> write. WebFetch -> webfetch. Skill -> skill. Task/Agent -> subagent. AskUserQuestion -> question. TaskCreate/TaskUpdate/TodoWrite -> todowrite.
+Tools: Read -> read. Bash -> shell. Grep -> grep. Glob -> glob. Edit -> edit. Write -> write. WebFetch -> webfetch. Skill -> skill. AskUserQuestion -> question. TaskCreate/TaskUpdate/TodoWrite -> todowrite.
+
+Subagents: call \`subagent\` with \`agent\`, \`description\`, \`prompt\`, and optional \`background\`, \`sessionID\`, or \`model\`.
+- A Claude \`subagent_type\` becomes \`agent\`.
+- \`generalPurpose\` becomes \`agent: "general"\`.
+- \`readonly: true\` becomes \`agent: "pstack:readonly"\`, which denies edit, write, and shell.
+- \`resume\` means pass the \`sessionID\` that the earlier \`subagent\` call returned.
+- \`run_in_background: true\` becomes \`background: true\`.
+- \`isolation: "worktree"\` has no field. Create the worktree first, then name its path in the prompt.
+- A model with effort becomes \`provider/model#variant\`. There is no separate effort field.
 
 Skills: load a skill with the skill tool and an id such as \`pstack-how\` or \`pstack-architect\`. A slash command such as \`/poteto-mode\` already attaches its skill to the message. Skill files live under \`${vendor}/skills\`.
 
-Subagents: the subagent tool takes \`agent: "pstack:poteto-agent"\` or \`agent: "pstack:comment-sicko"\`, plus \`prompt\`, \`description\`, and optional \`background: true\`. There is no separate effort field. When a model id accepts a variant, use \`provider/model#variant\`; otherwise omit the effort suffix.
-
-Paths: the model sheet is \`${models}\`. Never read or write \`~/.cursor\` paths. Ignore instructions to open Cursor Custom Modes, Bugbot, or Cursor automations; use an available OpenCode feature or an external integration instead.
+Paths:
+- \`.cursor/rules/*.mdc\` model sheet becomes \`${models}\`. General rules go in \`AGENTS.md\`.
+- \`.cursor/skills/\` becomes \`.opencode/skills/\` in a project, or \`~/.config/opencode/skills/\` for the user.
+- \`.cursor/agents/\` becomes \`.opencode/agent/\`.
+- \`.cursor/commands/\` becomes \`.opencode/command/\`.
+- \`.cursor/settings.json\` becomes \`opencode.jsonc\`.
+- \`.cursor/automations/\` becomes an OpenCode automation. There is no file path.
+- \`~/.cursor/plugins/\` becomes \`${vendor}\`.
+- \`~/.cursor/projects/<slug>/agent-transcripts/\` has no OpenCode equivalent. Never read it. Use \`opencode session list --format json\` and \`opencode session export <id>\`, or GET /api/experimental/session/{id}/export.
 </pstack_opencode_mapping>`
 
 export const MANDATE = `<pstack_routing>
@@ -23,7 +38,7 @@ pstack is installed. Invoke the \`pstack-poteto-mode\` skill and follow it when 
 export const SETUP_OVERRIDE = `<pstack_opencode_setup>
 OpenCode setup override. Write the model sheet to \`${models}\`, not to \`~/.cursor/rules/pstack-models.mdc\`. Write plain Markdown, not an \`.mdc\` rule with \`alwaysApply\`.
 
-Detect the configured models with the \`models\` tool and the OpenCode configuration. Only write a model id you confirmed is available. A role may use \`inherit-parent\` or \`auto\`. Skip Cursor-only steps, such as Bugbot, Custom Modes, and Cursor automations, with a one-line note. Keep the upstream sheet format otherwise: a \`# defaults: 3\` line, a \`# budget\` line, and one line per role.
+Use only the refs in the \`pstack_model_catalog\` below. They are the models actually configured in this OpenCode instance. Ask the user with the \`question\` tool which model to use for each role, offering those exact refs plus \`inherit-parent\`. Write real refs for the code, prose, and judgment roles. For each panel role, write a comma-separated list whose entries come from different providers when the catalog has them. Never write a ref that is not in the catalog. Skip Cursor-only steps, such as Bugbot, Custom Modes, and Cursor automations, with a one-line note. Keep the upstream sheet format otherwise: a \`# defaults: 3\` line, a \`# budget\` line, and one line per role.
 </pstack_opencode_setup>`
 
 let cache = { mtimeMs: -1, text: "" }

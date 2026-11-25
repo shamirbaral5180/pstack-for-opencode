@@ -10,7 +10,7 @@ import commands from "../src/data/commands.js"
 import skills from "../src/data/skills.js"
 import { MANDATE, MAPPING, SETUP_OVERRIDE } from "../src/overlay.js"
 import { portable, vendorRoot } from "../src/paths.js"
-import { ensureModelSheet } from "../src/setup.js"
+import { ensureModelSheet, recommendSheet } from "../src/setup.js"
 
 function bodyOf(path) {
   const text = readFileSync(path, "utf8")
@@ -23,6 +23,12 @@ function sha(value) {
   return createHash("sha256").update(value).digest("hex")
 }
 
+const CATALOG = [
+  { ref: "alpha/one", name: "One", providerID: "alpha", id: "one", variants: ["low", "high", "xhigh"] },
+  { ref: "beta/two", name: "Two", providerID: "beta", id: "two", variants: ["high"] },
+  { ref: "gamma/three", name: "Three", providerID: "gamma", id: "three", variants: [] },
+]
+
 function mockContext(options = {}) {
   const registered = {
     skills: [],
@@ -31,10 +37,14 @@ function mockContext(options = {}) {
     hooks: [],
     prompts: [],
     session: { parentID: undefined },
+    models: CATALOG,
   }
 
   const ctx = {
     options,
+    model: {
+      list: async () => ({ location: { directory: process.cwd() }, data: registered.models }),
+    },
     skill: {
       transform: async (fn) =>
         fn({
@@ -59,7 +69,7 @@ function mockContext(options = {}) {
     },
     session: {
       hook: async (name, callback) => registered.hooks.push({ name, callback }),
-      get: async () => registered.session,
+      get: async () => ({ data: registered.session }),
       prompt: async (input) => registered.prompts.push(input),
     },
   }
@@ -73,7 +83,7 @@ test("registers every skill, command, and agent", async () => {
 
   assert.equal(registered.skills.length, 59)
   assert.equal(registered.commands.length, 59)
-  assert.equal(registered.agents.length, 2)
+  assert.equal(registered.agents.length, 3)
   assert.equal(registered.hooks.length, 1)
   assert.equal(registered.hooks[0].name, "context")
 })
@@ -115,11 +125,12 @@ test("running a command attaches its skill and keeps the user text", async () =>
   assert.equal(prompt.sessionID, "s1")
 })
 
-test("setup command writes a default sheet and adds the OpenCode override", async () => {
+test("setup writes real model refs and puts distinct providers in panels", async () => {
   const directory = mkdtempSync(join(tmpdir(), "pstack-setup-"))
   const target = join(directory, "pstack-models.md")
   try {
     const { ctx, registered } = mockContext({ modelsPath: target })
+    registered.session = { model: { providerID: "alpha", id: "one" } }
     await plugin.setup(ctx)
 
     const command = registered.commands.find((item) => item.name === "setup-pstack")
@@ -128,12 +139,26 @@ test("setup command writes a default sheet and adds the OpenCode override", asyn
     const prompt = registered.prompts.at(-1)
     assert.equal(prompt.skills[0].id, "pstack-setup-pstack")
     assert.ok(prompt.text.includes(SETUP_OVERRIDE))
-    assert.ok(prompt.text.includes(portable(target)))
+    assert.ok(prompt.text.includes("<pstack_model_catalog>"))
+    assert.ok(prompt.text.includes("alpha/one"))
+
     assert.ok(existsSync(target))
-    assert.match(readFileSync(target, "utf8"), /feature, refactoring: inherit-parent/)
+    const sheet = readFileSync(target, "utf8")
+    assert.match(sheet, /feature, refactoring: alpha\/one/)
+    assert.match(sheet, /judgment and prose: beta\/two/)
+    assert.match(sheet, /arena runners: alpha\/one, beta\/two, gamma\/three/)
+    assert.match(sheet, /arena cross-judge pool: beta\/two, gamma\/three/)
+    assert.match(sheet, /swarm workers: alpha\/one#low/)
+    assert.ok(!sheet.includes("inherit-parent"))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test("recommended sheet uses real refs and never writes inherit-parent", () => {
+  const sheet = recommendSheet(CATALOG, "alpha/one#high")
+  assert.ok(sheet.includes("alpha/one"))
+  assert.ok(!sheet.includes("inherit-parent"))
 })
 
 test("ensureModelSheet keeps an existing sheet", () => {
@@ -141,11 +166,25 @@ test("ensureModelSheet keeps an existing sheet", () => {
   const target = join(directory, "pstack-models.md")
   try {
     writeFileSync(target, "custom\n")
-    const result = ensureModelSheet(target)
+    const result = ensureModelSheet(target, CATALOG, "alpha/one")
     assert.equal(result.created, false)
     assert.equal(readFileSync(target, "utf8"), "custom\n")
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("mapping covers subagent fields and Cursor paths", () => {
+  for (const needle of [
+    "generalPurpose",
+    "pstack:readonly",
+    "sessionID",
+    "background: true",
+    ".opencode/skills/",
+    "opencode session export",
+    "~/.cursor/projects",
+  ]) {
+    assert.ok(MAPPING.includes(needle), `mapping is missing ${needle}`)
   }
 })
 
@@ -175,12 +214,20 @@ test("child sessions receive mapping but not routing", async () => {
   assert.ok(!text.includes(MANDATE))
 })
 
-test("agents are subagents that cannot ask the user", async () => {
+test("agents are subagents and the readonly agent denies writes", async () => {
   const { ctx, registered } = mockContext()
   await plugin.setup(ctx)
 
   for (const agent of registered.agents) {
     assert.equal(agent.mode, "subagent")
-    assert.ok(agent.permissions.some((rule) => rule.action === "question" && rule.effect === "deny"))
+  }
+
+  const readonly = registered.agents.find((agent) => agent.id === "pstack:readonly")
+  assert.ok(readonly)
+  for (const action of ["edit", "write", "shell"]) {
+    assert.ok(
+      readonly.permissions.some((rule) => rule.action === action && rule.effect === "deny"),
+      `readonly must deny ${action}`,
+    )
   }
 })

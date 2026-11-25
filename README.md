@@ -2,7 +2,7 @@
 
 Lauren Tan's [pstack](https://github.com/cursor/plugins/tree/main/pstack), packaged as a native OpenCode plugin.
 
-The pstack content is vendored unmodified. This package adds only the OpenCode delivery layer: skill registration, a slash command per skill, the two subagents, session routing, and the model sheet path.
+The pstack content is vendored unmodified. This package adds only the OpenCode delivery layer: skill registration, a slash command per skill, the vendored subagents plus a read-only adapter agent, session routing, the model sheet path, and the Cursor-to-OpenCode mapping.
 
 ## Install
 
@@ -25,9 +25,11 @@ Restart OpenCode after changing the plugin.
 ## Use
 
 - `/poteto-mode <task>` for rigorous work. The command attaches the `pstack-poteto-mode` skill.
-- `/setup-pstack` to pick models. It writes `~/.config/opencode/pstack-models.md`. If no sheet exists, the command writes a default `inherit-parent` sheet first; an existing sheet is never overwritten.
+- `/setup-pstack` lists the real models configured in OpenCode, lets you assign one to each pstack role, and writes `~/.config/opencode/pstack-models.md`. If no sheet exists, it first writes a recommended sheet with real model IDs and distinct providers for panels. An existing sheet is never overwritten.
 - `/how`, `/why`, `/architect`, `/tdd`, and the other pstack skills each have a command.
-- Subagents are `pstack:poteto-agent` and `pstack:comment-sicko`.
+- Subagents are `pstack:poteto-agent`, `pstack:comment-sicko`, and `pstack:readonly`. `generalPurpose` maps to `general`, `readonly` maps to `pstack:readonly`, `resume` passes a `sessionID`, and `run_in_background` maps to `background: true`.
+
+Cursor paths and transcripts are mapped to OpenCode equivalents in the injected context and in [references/opencode-tools.md](references/opencode-tools.md). Transcripts use `opencode session list` and `opencode session export`, not `~/.cursor/projects`.
 
 Root sessions also receive pstack routing on every model step, so a qualifying task reaches poteto-mode even without the slash command. Set `session hook: off` in the model sheet to disable that.
 
@@ -50,7 +52,9 @@ vendor/MANIFEST.json sha256 of every vendored file
 src/data/           generated registration data
 src/index.js        the plugin
 src/overlay.js      mapping, routing, setup override
-scripts/            hash, generate, verify
+src/models.js       real model catalog for setup
+src/setup.js        model sheet writer
+scripts/            hash, generate, verify, frontmatter
 ```
 
 ## Develop
@@ -58,6 +62,10 @@ scripts/            hash, generate, verify
 ```bash
 npm run hash      # record vendor hashes
 npm run generate  # rebuild src/data from vendor
-npm test          # registration and content-parity tests
+npm test          # registration, frontmatter, and content-parity tests
 npm run verify    # manifest, inventory, and path checks
+npm run check     # verify plus tests
+npm run pack:check
 ```
+
+`postinstall` reinstalls the statechart skill's dependencies, because npm omits nested `node_modules` from the package. A local checkout already has them, so the script is a no-op there.

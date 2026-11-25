@@ -2,20 +2,41 @@ import { join } from "node:path"
 import agents from "./data/agents.js"
 import commands from "./data/commands.js"
 import skills from "./data/skills.js"
+import { currentModelRef, formatCatalog, modelCatalog } from "./models.js"
 import { MANDATE, MAPPING, SETUP_OVERRIDE, modelsBlock } from "./overlay.js"
 import { modelsPath, portable, vendorRoot } from "./paths.js"
 import { ensureModelSheet } from "./setup.js"
 
 const SETUP = "setup-pstack"
 
-function commandText(command, text, sheetPath) {
-  const task = text.trim() || `Run the ${command.name} skill.`
+// readonly: true has no OpenCode flag. It maps to this agent, whose deny rules
+// come last in the ruleset, where OpenCode's last-match-wins evaluation applies.
+const READONLY = {
+  id: "pstack:readonly",
+  description:
+    "Read-only pstack reviewer. Inspects code, diffs, tests, and evidence, and reports findings without modifying files.",
+  system:
+    "You are a read-only reviewer. Inspect the code, diffs, tests, and evidence you are given. Do not modify files and do not run shell commands. Report findings with file paths and concrete evidence. Do not ask the user questions.",
+  permissions: [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "write", resource: "*", effect: "deny" },
+    { action: "shell", resource: "*", effect: "deny" },
+    { action: "question", resource: "*", effect: "deny" },
+  ],
+}
+
+async function commandText(ctx, command, input, sheetPath) {
+  const task = input.prompt.text.trim() || `Run the ${command.name} skill.`
   if (command.name !== SETUP) return task
-  const sheet = ensureModelSheet(sheetPath)
+
+  const catalog = await modelCatalog(ctx)
+  const current = await currentModelRef(ctx, input.sessionID)
+  const sheet = ensureModelSheet(sheetPath, catalog, current)
   const state = sheet.created
-    ? `A default model sheet was written to ${portable(sheet.path)}.`
+    ? `A model sheet was written to ${portable(sheet.path)} from the configured models.`
     : `The model sheet already exists at ${portable(sheet.path)}.`
-  return `${SETUP_OVERRIDE}\n\n${state}\n\n${task}`
+  return [SETUP_OVERRIDE, formatCatalog(catalog), state, task].filter(Boolean).join("\n\n")
 }
 
 export default {
@@ -48,7 +69,7 @@ export default {
             const already = attached.some((item) => item.id === command.skillId)
             await ctx.session.prompt({
               sessionID: input.sessionID,
-              text: commandText(command, input.prompt.text, sheetPath),
+              text: await commandText(ctx, command, input, sheetPath),
               files: input.prompt.files,
               agents: input.prompt.agents,
               skills: already ? attached : [{ id: command.skillId }, ...attached],
@@ -60,13 +81,18 @@ export default {
     })
 
     await ctx.agent?.transform((editor) => {
-      for (const agent of agents) {
+      for (const agent of [...agents, READONLY]) {
         if (editor.get(agent.id)) continue
         editor.update(agent.id, (entry) => {
           entry.mode = "subagent"
           entry.description = agent.description
           entry.system = agent.system
-          entry.permissions.push({ action: "question", resource: "*", effect: "deny" })
+          for (const rule of agent.permissions ?? [
+            { action: "*", resource: "*", effect: "allow" },
+            { action: "question", resource: "*", effect: "deny" },
+          ]) {
+            entry.permissions.push(rule)
+          }
         })
       }
     })
@@ -74,7 +100,8 @@ export default {
     await ctx.session.hook("context", async (event) => {
       let root = true
       try {
-        const session = await ctx.session.get({ sessionID: event.sessionID })
+        const result = await ctx.session.get({ sessionID: event.sessionID })
+        const session = result?.data ?? result
         root = !session?.parentID
       } catch {}
       const parts = [MAPPING, root ? MANDATE : "", root ? modelsBlock() : ""].filter(Boolean)

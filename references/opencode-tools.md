@@ -1,6 +1,6 @@
 # OpenCode mapping for pstack
 
-This file is the runtime mapping the plugin injects into every session. It exists so the vendored pstack skills and agents stay byte-identical to Lauren Tan's originals.
+The plugin injects this mapping into every session. It exists so the vendored pstack skills and agents stay byte-identical to Lauren Tan's originals.
 
 ## Tools
 
@@ -14,10 +14,25 @@ This file is the runtime mapping the plugin injects into every session. It exist
 | `Write` | `write` |
 | `WebFetch` | `webfetch` |
 | `Skill` | `skill` |
-| `Task`, `Agent` | `subagent` |
 | `AskUserQuestion` | `question` |
 | `TaskCreate`, `TaskUpdate`, `TodoWrite` | `todowrite` |
-| `run_in_background: true` | `subagent` with `background: true` |
+
+## Subagents
+
+`subagent` takes `agent`, `description`, `prompt`, and optional `background`, `sessionID`, or `model`.
+
+| Claude field | OpenCode |
+| --- | --- |
+| `subagent_type: "pstack:poteto-agent"` | `agent: "pstack:poteto-agent"` |
+| `subagent_type: "generalPurpose"` | `agent: "general"` |
+| `subagent_type: "pstack:comment-sicko"` | `agent: "pstack:comment-sicko"` |
+| `readonly: true` | `agent: "pstack:readonly"` |
+| `resume` | pass the `sessionID` returned by the earlier `subagent` call |
+| `run_in_background: true` | `background: true` |
+| `isolation: "worktree"` | no field; create the worktree first and name its path in the prompt |
+| `model` plus effort | `provider/model#variant`; there is no separate effort field |
+
+`pstack:readonly` is an adapter agent, not a vendored one. It denies `edit`, `write`, `shell`, and `question`, because OpenCode has no `readonly` boolean.
 
 ## Skills and commands
 
@@ -26,19 +41,36 @@ This file is the runtime mapping the plugin injects into every session. It exist
 - A command attaches its skill to the prompt directly, so the model does not have to discover it.
 - `disable-model-invocation: true` maps to `autoinvoke: false`, which hides the skill from the automatic list while keeping it loadable.
 
-## Subagents
-
-- `pstack:poteto-agent` and `pstack:comment-sicko` are registered as subagents.
-- The `subagent` tool takes `agent`, `prompt`, `description`, and optional `background`.
-- OpenCode denies the `question` tool to these subagents, the same way a Claude Code subagent cannot ask the user.
-
 ## Models
 
 - The model sheet is `~/.config/opencode/pstack-models.md`.
-- OpenCode accepts `provider/model` or `provider/model#variant` in the `subagent` model field.
-- There is no separate reasoning-effort field. Use a variant when the provider exposes one, otherwise omit the suffix. This is the one documented parity gap.
+- `/setup-pstack` reads the real configured models from `ctx.model.list()`, injects them as a catalog, and writes refs such as `opencode/tidepool-alpha-free#high`.
+- Panel roles get a comma-separated list. The setup command picks distinct providers for the default sheet when the catalog has them.
+- OpenCode accepts `provider/model` or `provider/model#variant` in the `subagent` model field. There is no separate reasoning-effort field.
 
 ## Paths
 
-- The vendored pstack root is the `vendor/pstack` directory next to this plugin.
-- Cursor paths are not used. The plugin injects its root path into every session so agents can find `poteto-mode/SKILL.md` without searching `~/.cursor`.
+| Cursor | OpenCode |
+| --- | --- |
+| `.cursor/rules/*.mdc` model sheet | `~/.config/opencode/pstack-models.md` |
+| `.cursor/rules/*.mdc` general rules | `AGENTS.md` |
+| `.cursor/skills/` (project) | `.opencode/skills/` |
+| `.cursor/skills/` (user) | `~/.config/opencode/skills/` |
+| `.cursor/agents/` | `.opencode/agent/` |
+| `.cursor/commands/` | `.opencode/command/` |
+| `.cursor/settings.json` | `opencode.jsonc` |
+| `.cursor/automations/` | an OpenCode automation, no file path |
+| `~/.cursor/plugins/` | the vendored pstack root next to this plugin |
+| `~/.cursor/projects/<slug>/agent-transcripts/` | OpenCode sessions, see below |
+
+## Transcripts
+
+Never read `~/.cursor/projects` or `~/.claude/projects` on OpenCode. They either do not exist or hold another harness's history.
+
+Use one of:
+
+- `opencode session list --format json`, then `opencode session export <id> > <file>`.
+- `GET /api/experimental/session/{sessionID}/export` with the server password.
+- The live conversation in context when the history is short.
+
+The export holds every message, including compacted turns. Redirect it to a file, because a pipe can cut it short. Add `--sanitize` to redact sensitive data.

@@ -6,17 +6,35 @@
   "type": "module",
   "main": "index.js",
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "opencode",
+    "pstack",
+    "poteto-mode",
+    "agent-skills",
+    "plugin"
+  ],
   "files": [
     "index.js",
     "src",
+    "scripts",
     "vendor",
-    "references"
+    "references",
+    "docs",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "hash": "node scripts/hash-vendor.mjs",
     "generate": "node scripts/generate.mjs",
     "sync": "node scripts/sync-upstream.mjs",
     "verify": "node scripts/verify.mjs",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "check": "node scripts/verify.mjs && node --test test/",
+    "postinstall": "node scripts/ensure-statechart-deps.mjs",
+    "prepack": "node scripts/generate.mjs && node scripts/verify.mjs",
+    "pack:check": "npm pack --dry-run"
   }
 }

@@ -2,36 +2,18 @@
 // Content is copied verbatim; only frontmatter is parsed for metadata.
 import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
+import { parseFrontmatter } from "./frontmatter.mjs"
 
 const root = join(import.meta.dirname, "..")
 const vendor = join(root, "vendor", "pstack")
 const data = join(root, "src", "data")
-
-function parseFrontmatter(text, file) {
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
-  if (!match) throw new Error(`Missing frontmatter: ${file}`)
-  const fields = {}
-  for (const line of match[1].split(/\r?\n/)) {
-    const pair = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
-    if (!pair) continue
-    const [, key, raw] = pair
-    let value = raw.trim()
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1)
-    }
-    if (value === "true") value = true
-    else if (value === "false") value = false
-    fields[key] = value
-  }
-  return { fields, body: text.slice(match[0].length) }
-}
 
 function readSkills() {
   const skills = []
   for (const entry of readdirSync(join(vendor, "skills"), { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const path = join(vendor, "skills", entry.name, "SKILL.md")
-    const { fields, body } = parseFrontmatter(readFileSync(path, "utf8"), path)
+    const { data: fields, body } = parseFrontmatter(readFileSync(path, "utf8"), path)
     const skill = {
       id: `pstack-${entry.name}`,
       name: String(fields.name ?? entry.name),
@@ -50,7 +32,7 @@ function readAgents() {
   for (const entry of readdirSync(join(vendor, "agents"), { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue
     const path = join(vendor, "agents", entry.name)
-    const { fields, body } = parseFrontmatter(readFileSync(path, "utf8"), path)
+    const { data: fields, body } = parseFrontmatter(readFileSync(path, "utf8"), path)
     const name = String(fields.name ?? entry.name.replace(/\.md$/, ""))
     agents.push({
       id: `pstack:${name}`,

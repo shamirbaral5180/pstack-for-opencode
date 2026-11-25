@@ -185,7 +185,7 @@ The port adds three layers on top of the unchanged pstack content:
 
 **Known limitations (not defects in the port):**
 
-- The `babysit` playbook's `watch-pr` helper needs [bun](https://bun.sh) and a CI pipeline to watch.
+- **CI babysitting is unverified.** The `babysit` playbook depends on a live CI pipeline (GitHub Actions) and the `watch-pr` watcher, which requires [bun](https://bun.sh). Neither a real failing CI run nor the watcher was exercised end to end here, so babysitting is documented rather than claimed.
 - `worktree-cleanup` reclaimers (`xcrun simctl`, `df -h`) are macOS/Linux-only.
 - The `statechart` skill needs `mise` + TLC + Java on first run.
 - Bugbot and Cursor's managed cloud agents have no OpenCode equivalent and are out of scope.

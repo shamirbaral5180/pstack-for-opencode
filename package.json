@@ -31,8 +31,9 @@
     "generate": "node scripts/generate.mjs",
     "sync": "node scripts/sync-upstream.mjs",
     "verify": "node scripts/verify.mjs",
+    "audit": "node scripts/audit-translation.mjs",
     "test": "node --test test/",
-    "check": "node scripts/verify.mjs && node --test test/",
+    "check": "node scripts/verify.mjs && node scripts/audit-translation.mjs && node --test test/",
     "postinstall": "node scripts/ensure-statechart-deps.mjs",
     "prepack": "node scripts/generate.mjs && node scripts/verify.mjs",
     "pack:check": "npm pack --dry-run"

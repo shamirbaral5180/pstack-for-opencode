@@ -2,7 +2,6 @@
   "files": {
     ".cursor-plugin/plugin.json": "a2d2c9686de5420c0ad8ffa3c9c245537440c0410772032203e41295cd9b99a5",
     ".gitignore": "0830294583061ae7247737c82eb85c808ceed2252b712f0ad431df8bb98f47e7",
-    "AGENTS.md": "0aa10f87f3857b9643623063a960416be58727089366765822cabbaf1dc81701",
     "LICENSE": "0b179de8c206d95074651dc54810d1278cbe3c7edef85f6d3eb09c7bd2c2f02f",
     "README.md": "c9275692911b57220eb6e5dfc071966b28361c0b3d6de6b07061b0304b22a596",
     "agents/comment-sicko.md": "4265cec1c09585d306810a45934bb3152d73c2fc36e0555472c9c8a1137bad9c",
@@ -1982,7 +1981,7 @@
     "skills/unslop/SKILL.md": "243edd01eeadaf9da57dea4eb4f31c02e5bcf6a1a04be8409d583c5dfc11aa34",
     "skills/why/SKILL.md": "e3186017c324366b0390a225fcccf9750a85bf13f4c5d7666f5de110e959f758"
   },
-  "fileCount": 1981,
-  "bytes": 7929374,
-  "root": "e123a54f34403fb3941006b9842b47cae9c43c6fc382289240f90fc362d2abc3"
+  "fileCount": 1980,
+  "bytes": 7929026,
+  "root": "65133c0e4de2f3e17682f49562f2b94b3489add3299388388c129269c1bacb30"
 }

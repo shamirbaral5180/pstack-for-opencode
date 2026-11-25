@@ -3,7 +3,6 @@
 import { cpSync, existsSync, rmSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { join, resolve } from "node:path"
-
 const root = join(import.meta.dirname, "..")
 const source = resolve(process.argv[2] ?? join(root, "..", "pstack"))
 const destination = join(root, "vendor", "pstack")
@@ -17,7 +16,12 @@ if (!existsSync(join(source, "skills")) || !existsSync(join(source, "agents"))) 
 rmSync(destination, { recursive: true, force: true })
 cpSync(source, destination, {
   recursive: true,
-  filter: (path) => !path.split(/[\\/]/).includes(".git"),
+  filter: (path) => {
+    const parts = path.split(/[\\/]/)
+    if (parts.includes(".git")) return false
+    // The local AGENTS.md is a workspace spec, not part of upstream pstack.
+    return !(parts.at(-1) === "AGENTS.md" && resolve(path) === resolve(source, "AGENTS.md"))
+  },
 })
 
 for (const script of ["hash-vendor.mjs", "generate.mjs"]) {

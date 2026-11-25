@@ -20,9 +20,14 @@ if (existsSync(modules)) {
 }
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm"
-const result = spawnSync(npm, ["install", "--omit=dev", "--no-audit", "--no-fund"], {
+const result = spawnSync(npm, ["install", "--no-audit", "--no-fund"], {
   cwd: scripts,
   stdio: "inherit",
   shell: true,
 })
-process.exit(result.status ?? 1)
+if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1)
+if (!existsSync(join(modules, "fast-check"))) {
+  console.error("fast-check was not installed; the statechart skill cannot run")
+  process.exit(1)
+}
+console.log("statechart dependencies installed")

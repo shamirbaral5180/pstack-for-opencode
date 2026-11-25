@@ -1,0 +1,22 @@
+{
+  "name": "pstack-for-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lauren Tan's pstack, packaged as a native OpenCode plugin",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "src",
+    "vendor",
+    "references"
+  ],
+  "scripts": {
+    "hash": "node scripts/hash-vendor.mjs",
+    "generate": "node scripts/generate.mjs",
+    "sync": "node scripts/sync-upstream.mjs",
+    "verify": "node scripts/verify.mjs",
+    "test": "node --test test/"
+  }
+}

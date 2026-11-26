@@ -152,12 +152,12 @@ The port adds three layers on top of the unchanged pstack content:
 3. **Persistence** — activating a skill records the mode in a session instruction entry, so the methodology stays active through follow-ups, context compaction, and plugin reloads.
 4. **Model sheet** — `/setup-pstack` writes a per-role model mapping that the agents and the model hook read.
 
-When the active session lacks native `todowrite`, pstack exposes `pstack_todowrite`. Its list is stored in OpenCode's session instruction entries, not in a repository file or the native Desktop todo panel. When the host has native `todowrite`, pstack uses it and drops the fallback.
+The pstack workflow checklist is always the structured `pstack_todowrite` tool, stored in OpenCode's session instruction entries rather than a repository file or the native Desktop todo panel. Native `todowrite` is hidden for an active pstack session, because it cannot carry the `workflow`, step-ID, and implementation-`paths` fields that the prerequisite and handoff gates require.
 
 In Poteto Mode the checklist and a pre-tool checkpoint validate observable prerequisites against the selected playbook, without choosing a route or inferring conditional decisions:
 
 - **Unconditional skill prerequisites.** Steps that say to use, run, or apply a skill — for example Feature step 2's `architect`, Bug fix step 2's `why`, and the `sequence-verifiable-units` reference — must be loaded in full before the checklist advances past them. Conditional clauses (`if`, `when`, `unless`) are never promoted to requirements.
-- **Mandatory implementation handoff.** A playbook step that delegates code to a subagent requires an attributable worker change, not just a spawn. On the fallback list, the main agent must first save the step in progress with the project-relative implementation `paths`, name those files in the worker's brief, and load the step's mandatory principle leaf. A successful worker edit or write whose diff matches a declared path satisfies the handoff; a shell-only change does not.
+- **Mandatory implementation handoff.** A playbook step that delegates code to a subagent requires an attributable worker change, not just a spawn. The main agent must first save the step in progress with the project-relative implementation `paths`, name those files in the worker's brief, and load the step's mandatory principle leaf. A successful worker edit or write whose diff matches a declared path satisfies the handoff; a shell-only change does not.
 - **Observed, not blocked, shell effects.** A shared snapshot that shows workspace changes during a shell or Code Mode step is reported as an observation — it cannot identify the writer, so investigation, scaffolding, and verification proceed, but a shell-only change never satisfies a delegation step.
 
 The checkpoint is an evidence check, not a security boundary: it cannot attribute arbitrary shell writes to a specific agent, detect work done outside observable tools, or prove that a loaded skill was actually applied.
@@ -196,9 +196,11 @@ The checkpoint is an evidence check, not a security boundary: it cannot attribut
 - Pause → cold restart → session pickup, and instruction recovery after context compaction.
 - PR creation → verification → merge (with `gh` installed).
 - The read-only boundary (reviewers cannot write or run shell).
+- The structured workflow checklist and its gates in natural execution: two independent DeepSeek V4.1 Flash feature runs with native `todowrite` enabled both kept the structured checklist, carried step IDs and implementation paths, made zero main-session writes, delegated to a worker on the sheet model, and passed the product check. A third baseline run showed the same under the fallback alone.
 
 **Known limitations (not defects in the port):**
 
+- **The checkpoint is evidence, not a security boundary.** It cannot attribute arbitrary shell/`execute`/Code-Mode writes to a writer (it reports them as observations), prove a loaded skill was *applied* (only *loaded*), or stop a model that never saves a checklist or never declares scope (the route is then ambiguous and writes pass). Independent review remains agent discretion.
 - **CI babysitting is unverified.** The `babysit` playbook depends on a live CI pipeline (GitHub Actions) and the `watch-pr` watcher, which requires [bun](https://bun.sh). Neither a real failing CI run nor the watcher was exercised end to end here, so babysitting is documented rather than claimed.
 - `worktree-cleanup` reclaimers (`xcrun simctl`, `df -h`) are macOS/Linux-only.
 - The `statechart` skill needs `mise` + TLC + Java on first run.

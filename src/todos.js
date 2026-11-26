@@ -57,7 +57,11 @@ export function registerTodos(ctx, activeMode, sources) {
         let value = todos
         if (mode === "pstack-poteto-mode" || workflow) {
           const source = sources.get(workflow)
-          if (!source) throw new Error("Name the upstream playbook or routed workflow skill selected by Poteto Mode before saving the checklist. The plugin does not choose the route.")
+          if (!source) {
+            const example = [...sources.keys()].find((name) => name.startsWith("playbooks/")) ?? "playbooks/feature.md"
+            const given = workflow === undefined ? "nothing" : JSON.stringify(workflow)
+            throw new Error(`The \`workflow\` field must name the selected source exactly (received ${given}). Use the source name you loaded, such as \`${example}\` or \`figure-it-out\`. The plugin does not choose the route.`)
+          }
           const context = await ctx.session.context({ sessionID })
           const messages = context?.data ?? context
           if (!Array.isArray(messages) || messages.length === 0) throw new Error("OpenCode did not supply session evidence. Checklist update could not be validated.")
@@ -75,12 +79,13 @@ export function registerTodos(ctx, activeMode, sources) {
 }
 
 export function todoMapping(tools) {
-  if (tools?.todowrite) {
-    delete tools[TODO_TOOL]
-    return "TaskCreate, TaskUpdate, TodoWrite, and todolist refer to the native `todowrite` tool."
-  }
+  // Native `todowrite` carries no workflow, step-ID, or path fields, so it cannot
+  // hold the structured record the pstack checklist needs. Keep the structured
+  // fallback for pstack sessions and hide the native tool, so prerequisite and
+  // handoff validation run identically on every host.
+  if (tools?.todowrite) delete tools.todowrite
   if (tools?.[TODO_TOOL]) {
-    return `TaskCreate, TaskUpdate, TodoWrite, todowrite, and todolist refer to \`${TODO_TOOL}\` on this host. After loading your selected workflow, name it in \`workflow\` and set the checklist with \`todos\` before advancing. Use original step numbers or phase letters as \`step\` IDs; for a Start section use \`start\`. Keep those IDs in updates. If the tool reports missing evidence, complete the upstream prerequisite or report the blocker.`
+    return `TaskCreate, TaskUpdate, TodoWrite, todowrite, and todolist refer to \`${TODO_TOOL}\` on this host. After loading your selected workflow, name it in \`workflow\` and set the checklist with \`todos\` before advancing. Use original step numbers or phase letters as \`step\` IDs; for a Start section use \`start\`. Keep those IDs in updates. For a playbook step that delegates implementation, save that step in progress with its concrete project-relative \`paths\` before handing it off; a child must actually change each scoped file before you close the step. If the tool reports missing evidence, complete the upstream prerequisite or report the blocker.`
   }
   return "No todo tool is available for this request. If the selected workflow requires a todolist, report that step as blocked; do not claim it was created."
 }

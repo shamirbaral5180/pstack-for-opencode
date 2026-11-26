@@ -254,8 +254,10 @@ test("fallback todos are session-scoped, durable, and preserve native permission
     const tools = { read: {}, [TODO_TOOL]: {}, ...(native ? { todowrite: {} } : {}) }
     const event = { sessionID, agent: "build", system: [], tools }
     await context(event)
-    assert.equal(TODO_TOOL in tools, sessionID === "active" && !native)
-    assert.equal("todowrite" in tools, native)
+    // The structured fallback is the pstack checklist tool on every host: kept for
+    // pstack sessions (native todowrite is hidden), removed for plain sessions.
+    assert.equal(TODO_TOOL in tools, sessionID === "active")
+    assert.equal("todowrite" in tools, false)
     assert.ok("read" in tools)
     if (sessionID === "plain") assert.deepEqual(event.system, [])
     else assert.match(event.system[0].text, /<pstack_poteto_mode>/)
@@ -265,6 +267,7 @@ test("fallback todos are session-scoped, durable, and preserve native permission
   registered.messages.push({ type: "skill", skill: "pstack-figure-it-out" })
   const todos = ["start", "A", "B", "C", "D", "E"].map((step) => ({ step, content: `Track ${step}`, status: "pending" }))
   await assert.rejects(tool.execute({ workflow: "figure-it-out", todos: todos.slice(1) }, call), /missing upstream checklist entries.*start/)
+  await assert.rejects(tool.execute({ workflow: "Feature", todos }, call), /`workflow` field must name the selected source exactly.*playbooks\//)
   await tool.execute({ workflow: "figure-it-out", todos }, call)
   assert.equal(registered.permissionRequests[0].action, "todowrite")
   const reloaded = mockContext()

@@ -148,9 +148,12 @@ flowchart TD
 The port adds three layers on top of the unchanged pstack content:
 
 1. **Registration** — every skill, playbook, principle, and agent is translated from Cursor paths and tool names to OpenCode equivalents, then registered as a skill, command, and subagent.
-2. **Gated routing** — a session hook injects the OpenCode mapping, the controlling action layer (for `/poteto-mode`) or routing mandate (for the other skills), and the model sheet — but only for a session that activated a pstack skill or a `pstack:*` subagent. Plain sessions keep OpenCode's default behavior. The action layer identifies the playbook and requires reading it in full, without duplicating its rules.
+2. **Gated routing** — the main agent uses the original Poteto Mode skill to select the route. It reads and follows the selected playbook or workflow skill; the adapter does not maintain a second list of routes. Plain sessions receive no pstack instructions or fallback todo tool.
 3. **Persistence** — activating a skill records the mode in a session instruction entry, so the methodology stays active through follow-ups, context compaction, and plugin reloads.
 4. **Model sheet** — `/setup-pstack` writes a per-role model mapping that the agents and the model hook read.
+
+When the active session lacks native `todowrite`, pstack exposes `pstack_todowrite`. Its list is stored in OpenCode's session instruction entries, not in a repository file or the native Desktop todo panel.
+In Poteto Mode, the fallback validates checklist updates against the workflow the main agent selected. A pre-tool checkpoint also checks direct edits, new subagent calls, and recognized review and delivery commands against observable prerequisites. It does not choose a route, infer conditional decisions, or certify that a loaded skill was applied.
 
 ---
 

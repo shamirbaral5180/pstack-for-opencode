@@ -48,7 +48,10 @@ The adapter adds:
 - 3 subagents: `pstack:poteto-agent`, `pstack:comment-sicko`, `pstack:readonly`
 - a session context block with the tool, subagent, path, and model mapping
 - gated session routing: nothing for a plain OpenCode session, the mapping for a `pstack:*` subagent, and the mapping plus a controlling methodology (or routing) plus the sheet for a session that activated a pstack skill
-- a controlling action layer for `/poteto-mode` sessions: it identifies the matching playbook, requires reading and following it in full, and fails explicitly if the playbook cannot be read — it does not duplicate, summarize, or modify the playbook's rules, so the vendored playbook stays the single source of truth
+- an action layer for `/poteto-mode` sessions: the original `SKILL.md` owns routing, including `figure-it-out` when indicated. The main agent is instructed to load the selected workflow in full and report a load failure instead of proceeding. The adapter neither selects a route nor duplicates its steps.
+- a session-scoped `pstack_todowrite` fallback when native `todowrite` is missing. The fallback saves model-authored todos as session instructions, with a `blocked` status and an OpenCode permission check.
+- checklist validation at the fallback tool boundary. The main agent names its selected source. Numbered playbook steps and phase headings in skills that open a todolist come from the vendored text. A small set of unambiguous mandatory skill references are checked against successful loads in the session transcript. A failed check names the missing entry or load and leaves the saved checklist unchanged.
+- a main-session `tool.execute.before` checkpoint for direct mutation, new delegation, and recognized Git/forge commands. It checks the current turn's observed source loads and successful todo writes before the requested action. A confirmed gap produces a tool error with the source and prerequisite to complete. It also recognizes a successful native todo write; without step IDs, it can establish that the list exists, not that the list faithfully represents the workflow.
 - a compaction hook that records the active mode so the post-compaction summary stays grounded
 - session activation recorded in a session instruction entry, so the mode survives a plugin reload mid-session
 - a normalized model sheet
@@ -119,6 +122,10 @@ A child session with `agent: pstack:poteto-agent` ran on `opencode/tidepool-alph
 
 ## Known gaps
 
+- Prior acceptance runs observed delegation and output files, not complete methodology. They did not establish that the selected workflow was appropriate, all applicable skills and principles were used, or review, verification, and delivery finished. The plugin does not yet enforce those semantic conditions.
+- The pre-tool checkpoint is not a security boundary. It leaves ambiguous routing and unavailable transcript evidence undecided. It does not classify arbitrary shell scripts, review performed through generic reads, or work performed outside observable tools. It does not prove that a loaded skill was applied or that verification matched the product surface.
+- Cursor's `control-ui`, `control-cli`, and `deslop` are not bundled. A project-provided equivalent can satisfy the corresponding step; when no equivalent exists, report it as blocked.
+
 - OpenCode has no marketplace or `/add-plugin`. Install is `opencode plugin add` or the `plugins` array.
 - OpenCode has no Custom Modes. The slash command activates the methodology for a session, the context hook injects it on every call, and a session instruction entry keeps it active through follow-ups, compaction, and plugin reloads.
 - True per-subagent worktree isolation needs a custom spawn tool. The translated swarm skill uses `git worktree add` and absolute paths; the child session still starts in the parent's directory.
@@ -127,3 +134,28 @@ A child session with `agent: pstack:poteto-agent` ran on `opencode/tidepool-alph
 - Cursor model families only exist when those providers are configured. Panels use available providers.
 - A cross-provider role change for a subagent needs an explicit `model` at spawn, or a plugin reload for the agent default. The resolve hook can only switch within the selected provider.
 - `benny` automations are vendored but not installed.
+
+## Workflow acceptance
+
+Run cases individually with a hard deadline for each case and its requests. Save the parent and child evidence before interrupting only sessions created by that case. Distinguish confirmed compliance failures from ambiguous route selection, missing capabilities, and execution timeouts. A deadline after delegation but before review is not a workflow pass.
+
+| Case | Evidence to require |
+| --- | --- |
+| Plain session | A completed normal response; neither the action layer nor the fallback todo tool in its model context |
+| Focused feature | The selected playbook and applicable skills loaded before their steps; a workflow todo list; scoped delegation and model routing; a reviewed diff and matching-surface verification |
+| Large, cross-cutting work | Evidence for the selected upstream route, then a definition of done and verification baseline where required. Inspect actual phase, Swarm, Arena, and review evidence where that route calls for them. Do not assume `figure-it-out` for every complex prompt. |
+| Delivery and persistence | Required review and delivery evidence for an authorized task; tell a cold service restart apart from a plugin reload and require evidence from a new turn after compaction |
+
+Repeat the workflow cases with more than one main model. Evaluate delegation counts against the chosen workflow and decomposition, not a constant. Use the trace of completed tool calls, child sessions, and artifacts rather than agent summaries or the presence of instructions alone. Classify missing external tooling separately from skipped steps.
+
+On OpenCode 2.4.1, the plain-session probe and an explicit fallback-todo smoke test passed. The separate cross-cutting planning probes on DeepSeek V4.1 Flash and DeepSeek V4 Pro both timed out at 85 seconds. Both opened `multi-phase-plan.md` first. Flash later read `figure-it-out/SKILL.md`; Pro did not in that run. Neither wrote a workflow todo before the deadline. These runs do not establish reliable initial routing or workflow tracking without an explicit request.
+
+After adding the checklist checkpoint, a guided live test on DeepSeek V4.1 Flash observed two tool errors and a recovery: an incomplete Feature checklist was rejected; an update past step 2 without an `architect` load was rejected; the same update was saved after a completed full read of `architect/SKILL.md`. This was a dry run of the checkpoint, not a completed Feature playbook.
+
+A guided `figure-it-out` dry run advanced to phase C without loading the conditional `architect` skill. The plain-session control also passed. In the repeated organic planning prompt, Flash read and selected `figure-it-out` and saved a checklist, but timed out at 85 seconds before completing the task. Pro completed in 62 seconds and saved a `multi-phase-plan.md` checklist but did not load `figure-it-out`, so it failed the probe's expected-route check. That result does not adjudicate which route is valid for every plan-only prompt.
+
+For the pre-tool checkpoint, the OpenCode 2.4.1 hook probe confirmed that `execute.before` can reject a write with a model-visible error while a subsequent read still succeeds. The live boundary regression then read Feature, rejected a direct write before any todo call, accepted the checklist after a full `architect` read, and verified the successful retry on disk. A plain-session control wrote its fixture without a pstack checkpoint.
+
+A local review dry run read `no-comments` successfully but was blocked from running the review command because it had not created the child session named by that skill. After a successful Comment Sicko spawn with a child session ID, the same command reached the local shell stub. No external review was posted. This proves the spawn prerequisite is observable; it does not certify the quality of the review or that every finding was acted on.
+
+The new cross-cutting planning runs did not prescribe a route. Both Flash and Pro chose `figure-it-out` and saved checklists, but neither reached completion within 85 seconds. Pro's first checklist omitted phases C–E and was rejected; it added them and wrote a planning artifact before the deadline. The run outcomes are timeouts, not routing failures or workflow passes.

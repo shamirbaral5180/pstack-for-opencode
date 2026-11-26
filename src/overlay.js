@@ -8,7 +8,7 @@ export function mapping(root) {
   return `<pstack_opencode_mapping>
 pstack content is installed unmodified from Lauren Tan's original pstack. Use this mapping only for tools, models, paths, and subagent fields.
 
-Tools: Read -> read. Bash -> shell. Grep -> grep. Glob -> glob. Edit -> edit. Write -> write. WebFetch -> webfetch. Skill -> skill. AskUserQuestion -> question. TaskCreate/TaskUpdate/TodoWrite -> todowrite.
+Tools: Read -> read. Bash -> shell. Grep -> grep. Glob -> glob. Edit -> edit. Write -> write. WebFetch -> webfetch. Skill -> skill. AskUserQuestion -> question.
 
 Subagents: call \`subagent\` with \`agent\`, \`description\`, \`prompt\`, and optional \`model\` or \`sessionID\`. There is no \`background\` field. Every subagent runs in the background.
 - \`subagent_type\` becomes \`agent\`.
@@ -23,6 +23,8 @@ Subagents: call \`subagent\` with \`agent\`, \`description\`, \`prompt\`, and op
 - A model with effort becomes \`provider/model#variant\`.
 
 Skills: load a skill with the skill tool and an id such as \`pstack-how\` or \`pstack-architect\`. A slash command such as \`/poteto-mode\` already attaches its skill to the message. Skill files live under \`${skills}/skills\`.
+
+Cursor's control-ui, control-cli, and deslop are not bundled. Use the matching project verification or review tooling when it exists. If a required capability is unavailable, report the blocked step and what could not be verified; do not mark it complete.
 
 Automations: Cursor's \`/loop\` becomes an OpenCode automation. Create it with the automation tool, trigger \`every\` or \`cron\`, action \`prompt\` with the predicate check, and delete it when the predicate passes.
 
@@ -44,30 +46,13 @@ export const MANDATE = `<pstack_routing>
 pstack is installed. Invoke the \`pstack-poteto-mode\` skill and follow it when a task touches more than one file, changes a signature other files call, involves a design or architecture choice, or is a bug whose cause is not known or a performance issue. For a specific intent, load that skill directly, such as \`pstack-tdd\`, \`pstack-architect\`, \`pstack-how\`, \`pstack-why\`, \`pstack-arena\`, or \`pstack-interrogate\`. For a contained change to one file with an obvious test, a question, or a one-line edit, work directly and verify on the real artifact. The user's entry point is the \`/poteto-mode\` command. User instructions take precedence.
 </pstack_routing>`
 
-// The action layer injected into a session once `/poteto-mode` is triggered. It
-// does NOT duplicate, summarize, or modify the playbook rules: it only identifies
-// the matching playbook, requires reading and following it in full, and fails
-// explicitly if the playbook cannot be read. The playbook remains the single
-// source of truth; the skill holds the non-negotiables, principles, and subagent
-// rules.
 export function methodology(root) {
-  const skills = portable(root)
-  const dir = `${skills}/skills/poteto-mode`
-  const playbooks = [
-    "investigation", "bug-fix", "perf-issue", "hillclimb", "runtime-forensics",
-    "trace-forensics", "feature", "refactoring", "prototype", "visual-parity",
-    "authoring-a-skill", "eval", "babysit", "shipping", "autonomous-run",
-    "autopilot-full", "autopilot-stack", "session-pickup", "pause-safely",
-    "multi-phase-plan", "worktree-cleanup", "opening-a-pr",
-  ].join(", ")
   return `<pstack_poteto_mode>
-Poteto Mode is the controlling engineering methodology for this session. Where other guidance in this context conflicts, the poteto-mode playbooks control how you plan, delegate, review, and verify work. OpenCode's environment, tools, permissions, and security rules still apply unchanged.
+Poteto Mode is the controlling engineering methodology for this session. OpenCode's environment, tools, permissions, and security rules still apply unchanged.
 
-Required before any implementation: match the task to one of the playbooks at \`${dir}/playbooks/\` — ${playbooks} — and read it in full. The playbook is the single source of truth for the task's steps. Copy its steps into the todo list and follow them exactly; do not skip, summarize, or substitute any step.
+Before implementation, use the Playbooks section of \`${portable(root)}/skills/poteto-mode/SKILL.md\` to select the route. Use the attached skill or read the file if the attachment is no longer in context. That skill owns routing, non-negotiables, principles, and subagent rules.
 
-If you cannot read the matching playbook, stop and report the failure instead of proceeding without it.
-
-The poteto-mode skill at \`${dir}/SKILL.md\` (also attached to your first message) holds the non-negotiables, the principles, and the subagent rules.
+Read the selected playbook or routed workflow skill in full before following its steps. It is the single source of truth for the task's steps, including any conditions or exceptions. If you cannot load it, stop and report the failure instead of proceeding without it.
 </pstack_poteto_mode>`
 }
 

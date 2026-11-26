@@ -14,6 +14,7 @@ import { portable, vendorRoot } from "../src/paths.js"
 import { ensureModelSheet } from "../src/setup.js"
 import { hookEnabled, normalizeSheet, recommendedSheet } from "../src/sheet.js"
 import { translateText } from "../src/translate.js"
+import { TODO_TOOL } from "../src/todos.js"
 
 function bodyOf(path) {
   const text = readFileSync(path, "utf8")
@@ -75,6 +76,9 @@ function mockContext(options = {}) {
     sessions: {},
     models: CATALOG,
     instructionEntries: {},
+    tools: [],
+    permissionRequests: [],
+    messages: [],
   }
 
   const ctx = {
@@ -91,6 +95,12 @@ function mockContext(options = {}) {
     },
     command: {
       transform: async (fn) => fn({ add: (command) => registered.commands.push(command) }),
+    },
+    tool: {
+      transform: async (fn) => fn({ add: (tool) => registered.tools.push(tool) }),
+    },
+    permission: {
+      assert: async (request) => registered.permissionRequests.push(request),
     },
     agent: {
       transform: async (fn) =>
@@ -111,6 +121,7 @@ function mockContext(options = {}) {
     session: {
       hook: async (name, callback) => registered.hooks.push({ name, callback }),
       get: async (input) => ({ data: registered.sessions[input?.sessionID] ?? registered.session }),
+      context: async () => ({ data: registered.messages }),
       prompt: async (input) => registered.prompts.push(input),
       instructions: {
         entry: {
@@ -209,17 +220,18 @@ test("poteto-mode resolves sibling, playbook, reference, and worker paths absolu
   assert.ok(!text.includes("this file's absolute path"), "no unresolved relative phrase")
 })
 
-test("methodology is an action layer that identifies the playbook without duplicating its rules", () => {
+test("the action layer leaves routing and workflow rules to upstream", () => {
   const text = methodology("ROOT")
   assert.ok(text.includes("controlling engineering methodology"), "states precedence")
-  assert.ok(text.includes("match the task to one of the playbooks"), "identifies the playbook step")
-  assert.ok(text.includes("feature") && text.includes("bug-fix") && text.includes("refactoring"), "names the code playbooks")
-  assert.ok(text.includes("read it in full"), "requires a full playbook read")
+  assert.match(text, /Playbooks section of `ROOT\/skills\/poteto-mode\/SKILL\.md` to select the route/)
+  assert.doesNotMatch(text, /\bfeature\b|bug-fix|refactoring|figure-it-out/i, "does not enumerate routes")
+  assert.match(text, /Read the selected playbook or routed workflow skill in full before following its steps/)
   assert.ok(text.includes("single source of truth"), "delegates authority to the playbook")
-  assert.ok(text.includes("do not skip, summarize, or substitute any step"), "forbids substituting its own rules")
-  assert.ok(text.includes("If you cannot read the matching playbook, stop and report"), "fails explicitly on a missing playbook")
+  assert.match(text, /including any conditions or exceptions/, "preserves conditional steps")
+  assert.match(text, /If you cannot load it, stop and report/, "fails explicitly on a missing resource")
   assert.ok(text.includes("ROOT/skills/poteto-mode/SKILL.md"), "points at the full skill")
-  assert.ok(text.includes("ROOT/skills/poteto-mode/playbooks/"), "points at the playbooks")
+  assert.match(translateText(skills.find((skill) => skill.name === "poteto-mode").content, "ROOT"),
+    /playbooks\/<title>\.md[\s\S]*Large, cross-cutting, or unattended work[\s\S]*figure-it-out/)
   assert.ok(text.includes("non-negotiables") && text.includes("principles") && text.includes("subagent rules"), "points at the skill sections")
   // The action layer must NOT duplicate the playbook's rules.
   assert.ok(!text.includes("Mandatory: no skip-with-reason escape"), "does not copy the delegation mandate")
@@ -227,6 +239,53 @@ test("methodology is an action layer that identifies the playbook without duplic
   assert.ok(!text.includes('agent: "pstack:poteto-agent"'), "does not copy the subagent field")
   assert.ok(!text.includes("Cursor"), "no Cursor references")
   assert.ok(text.trim().endsWith("</pstack_poteto_mode>"), "block is closed")
+})
+
+test("fallback todos are session-scoped, durable, and preserve native permission decisions", async () => {
+  const { ctx, registered } = mockContext()
+  await plugin.setup(ctx)
+  const run = (name) => registered.commands.find((item) => item.name === name)
+    .execute({ sessionID: "active", prompt: { text: "work" }, delivery: "steer" })
+  await run("poteto-mode")
+  await run("arena")
+  const context = registered.hooks.find((item) => item.name === "context").callback
+  const tool = registered.tools.find((item) => item.name === TODO_TOOL)
+  for (const [sessionID, native] of [["plain", false], ["active", true], ["active", false]]) {
+    const tools = { read: {}, [TODO_TOOL]: {}, ...(native ? { todowrite: {} } : {}) }
+    const event = { sessionID, agent: "build", system: [], tools }
+    await context(event)
+    assert.equal(TODO_TOOL in tools, sessionID === "active" && !native)
+    assert.equal("todowrite" in tools, native)
+    assert.ok("read" in tools)
+    if (sessionID === "plain") assert.deepEqual(event.system, [])
+    else assert.match(event.system[0].text, /<pstack_poteto_mode>/)
+  }
+  const call = { sessionID: "active", agent: "build", messageID: "msg", id: "call" }
+  await assert.rejects(tool.execute({ todos: [] }, { ...call, sessionID: "plain" }), /only available/)
+  registered.messages.push({ type: "skill", skill: "pstack-figure-it-out" })
+  const todos = ["start", "A", "B", "C", "D", "E"].map((step) => ({ step, content: `Track ${step}`, status: "pending" }))
+  await assert.rejects(tool.execute({ workflow: "figure-it-out", todos: todos.slice(1) }, call), /missing upstream checklist entries.*start/)
+  await tool.execute({ workflow: "figure-it-out", todos }, call)
+  assert.equal(registered.permissionRequests[0].action, "todowrite")
+  const reloaded = mockContext()
+  reloaded.registered.instructionEntries = registered.instructionEntries
+  await plugin.setup(reloaded.ctx)
+  const saved = await reloaded.registered.tools.find((item) => item.name === TODO_TOOL).execute({}, call)
+  assert.deepEqual(JSON.parse(saved.content), { workflow: "figure-it-out", todos, verified: ["figure-it-out"] })
+  ctx.permission.assert = async () => { throw new Error("denied") }
+  await assert.rejects(tool.execute({ todos: [] }, call), /denied/)
+  assert.deepEqual(registered.instructionEntries.active.find((item) => item.key === "pstack-workflow-todos").value.todos, todos)
+})
+
+test("the adapter reports missing todo tooling instead of directing agents to a vanished tool", async () => {
+  const { ctx, registered } = mockContext()
+  await plugin.setup(ctx)
+  await registered.commands.find((item) => item.name === "poteto-mode")
+    .execute({ sessionID: "active", prompt: { text: "work" }, delivery: "steer" })
+  const event = { sessionID: "active", agent: "build", system: [], tools: { read: {} } }
+  await registered.hooks.find((item) => item.name === "context").callback(event)
+  assert.match(event.system[0].text, /No todo tool is available.*report that step as blocked/)
+  assert.deepEqual(event.tools, { read: {} })
 })
 
 test("explicit variants survive the budget", () => {

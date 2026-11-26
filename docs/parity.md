@@ -33,6 +33,7 @@ Substitutions:
 - `how`'s general-purpose + readonly pair to one `pstack:readonly` subagent
 - Cursor transcript paths to `opencode session list` and `opencode session export`
 - `~/.cursor/plugins/` to the translated cache root, so the `poteto-agent` fallback is a real path
+- relative references made absolute: `../<name>/SKILL.md`, `../playbooks/`, `../references/`, the backticked `<path>` placeholder, and `this file's absolute path` all resolve to the translated cache, so a model can open a playbook or `worker.md` to reach the delegation step
 - `cursor-team-kit` names to project tooling; `/deslop` stays project tooling, not `/unslop`
 - `docs/guide` and `README.md` copied into the cache so `/poteto-help` links resolve
 
@@ -46,7 +47,10 @@ The adapter adds:
 - 60 commands: one per skill
 - 3 subagents: `pstack:poteto-agent`, `pstack:comment-sicko`, `pstack:readonly`
 - a session context block with the tool, subagent, path, and model mapping
-- root-session routing to `pstack-poteto-mode`
+- gated session routing: nothing for a plain OpenCode session, the mapping for a `pstack:*` subagent, and the mapping plus a controlling methodology (or routing) plus the sheet for a session that activated a pstack skill
+- a controlling action layer for `/poteto-mode` sessions: it identifies the matching playbook, requires reading and following it in full, and fails explicitly if the playbook cannot be read — it does not duplicate, summarize, or modify the playbook's rules, so the vendored playbook stays the single source of truth
+- a compaction hook that records the active mode so the post-compaction summary stays grounded
+- session activation recorded in a session instruction entry, so the mode survives a plugin reload mid-session
 - a normalized model sheet
 - a model catalog with cost, context, status, and current-model marker
 
@@ -116,7 +120,7 @@ A child session with `agent: pstack:poteto-agent` ran on `opencode/tidepool-alph
 ## Known gaps
 
 - OpenCode has no marketplace or `/add-plugin`. Install is `opencode plugin add` or the `plugins` array.
-- OpenCode has no Custom Modes. The session hook and the slash command cover the intent.
+- OpenCode has no Custom Modes. The slash command activates the methodology for a session, the context hook injects it on every call, and a session instruction entry keeps it active through follow-ups, compaction, and plugin reloads.
 - True per-subagent worktree isolation needs a custom spawn tool. The translated swarm skill uses `git worktree add` and absolute paths; the child session still starts in the parent's directory.
 - Cursor `/loop` wake semantics are approximated with automations.
 - Bugbot and Cursor's managed cloud agents need external integrations.

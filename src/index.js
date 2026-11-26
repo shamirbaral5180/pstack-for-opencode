@@ -4,7 +4,7 @@ import agents from "./data/agents.js"
 import commands from "./data/commands.js"
 import skills from "./data/skills.js"
 import { currentModelRef, formatCatalog, modelCatalog } from "./models.js"
-import { MANDATE, SETUP_OVERRIDE, mapping } from "./overlay.js"
+import { MANDATE, SETUP_OVERRIDE, mapping, methodology } from "./overlay.js"
 import { modelsPath, portable } from "./paths.js"
 import { ensureModelSheet } from "./setup.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
@@ -45,6 +45,8 @@ const sameModel = (left, right) =>
   left?.providerID === right?.providerID &&
   left?.id === right?.id &&
   (left?.variant ?? undefined) === (right?.variant ?? undefined)
+
+const MODE_KEY = "pstack-active"
 
 async function applyAgentModels(ctx, sheetText, catalog) {  const model =
     roleModel(sheetText, "bug-fix", catalog) ?? roleModel(sheetText, "feature, refactoring", catalog)
@@ -88,8 +90,39 @@ export default {
     const sheetPath = typeof ctx.options?.modelsPath === "string" ? ctx.options.modelsPath : modelsPath
     const catalog = await modelCatalog(ctx)
     const sheetText = readSheet(sheetPath)
+
+    // sessionID -> skill id, for sessions that have activated a pstack skill. This
+    // is the fast in-memory signal; the durable source is the session instruction
+    // entry set alongside it, so a plugin reload mid-session does not drop the mode.
+    const activeModes = new Map()
+    const setMode = async (sessionID, skillId) => {
+      activeModes.set(sessionID, skillId)
+      try {
+        await ctx.session?.instructions?.entry?.put({ sessionID, key: MODE_KEY, value: skillId })
+      } catch {
+        // experimental instruction entries are a durability bonus, not a dependency
+      }
+    }
+    const getMode = async (sessionID) => {
+      const cached = activeModes.get(sessionID)
+      if (cached) return cached
+      try {
+        const result = await ctx.session?.instructions?.entry?.list({ sessionID })
+        const entries = result?.data ?? result ?? []
+        const entry = entries.find((item) => item.key === MODE_KEY)
+        if (entry?.value) {
+          activeModes.set(sessionID, entry.value)
+          return entry.value
+        }
+      } catch {
+        // fall through: the in-memory signal is authoritative for the current process
+      }
+      return undefined
+    }
+
     const translated = ensureTranslated()
     const MAPPING = mapping(translated.root)
+    const METHODOLOGY = methodology(translated.root)
     const allSkills = [...skills, { ...LOOP_SKILL, path: join(translated.root, LOOP_SKILL.source) }]
     const allCommands = [...commands, LOOP_COMMAND]
 
@@ -113,6 +146,7 @@ export default {
           name: command.name,
           description: command.description,
           execute: async (input) => {
+            if (command.skillId !== "pstack-setup-pstack") await setMode(input.sessionID, command.skillId)
             const attached = input.prompt.skills ?? []
             const already = attached.some((item) => item.id === command.skillId)
             await ctx.session.prompt({
@@ -151,24 +185,48 @@ export default {
 
     await applyAgentModels(ctx, sheetText, catalog)
 
+    // Poteto Mode is controlling only for sessions that activated a pstack skill
+    // (or pstack subagents). Every other session keeps OpenCode's default
+    // behavior, so the plugin does not leak routing into unrelated work.
     await ctx.session.hook("context", async (event) => {
+      const agent = String(event.agent ?? "")
+      const isPstackAgent = agent.startsWith("pstack:")
+      const mode = await getMode(event.sessionID)
+      if (!isPstackAgent && !mode) return
+
       const currentSheet = readSheet(sheetPath)
-      if (!hookEnabled(currentSheet)) {
-        event.system.push({ type: "text", text: MAPPING })
-        return
+      const hookOn = hookEnabled(currentSheet)
+
+      const parts = [MAPPING]
+      // The main session (a mode is set) gets the controlling methodology for
+      // `/poteto-mode`, or routing for the other pstack skills, plus the sheet.
+      if (mode && !isPstackAgent && hookOn) {
+        parts.push(mode === "pstack-poteto-mode" ? METHODOLOGY : MANDATE)
+        const normalized = currentSheet.trim() ? normalizeSheet(currentSheet, catalog) : ""
+        if (normalized) parts.push(`<pstack_model_sheet>\n${normalized.trim()}\n</pstack_model_sheet>`)
       }
-      let root = true
-      let session
-      try {
-        const result = await ctx.session.get({ sessionID: event.sessionID })
-        session = result?.data ?? result
-        root = !session?.parentID
-      } catch {}
-      const normalized = currentSheet.trim() ? normalizeSheet(currentSheet, catalog) : ""
-      const parts = [MAPPING, root ? MANDATE : ""]
-      if (root && normalized) parts.push(`<pstack_model_sheet>\n${normalized.trim()}\n</pstack_model_sheet>`)
       const text = parts.filter(Boolean).join("\n\n")
       if (text) event.system.push({ type: "text", text })
+    })
+
+    // Keep the mode active across compaction: the summary must record that pstack
+    // is the active methodology so the post-compaction transcript stays grounded.
+    await ctx.session.hook("compaction", async (event) => {
+      const mode = await getMode(event.sessionID)
+      if (!mode) return
+      const label = mode === "pstack-poteto-mode" ? "Poteto Mode (pstack)" : "pstack"
+      try {
+        if (Array.isArray(event.messages)) {
+          event.messages.push({
+            type: "synthetic",
+            id: `msg_pstack_mode_${Date.now()}`,
+            time: { created: Date.now() },
+            text: `This session runs under ${label} methodology. Preserve in the summary that this methodology is active and note the current playbook and step.`,
+          })
+        }
+      } catch {
+        // The context hook re-injects the methodology after compaction regardless.
+      }
     })
 
     await ctx.session.hook("experimental.model.resolve", async (event) => {

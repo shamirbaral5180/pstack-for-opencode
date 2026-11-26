@@ -37,6 +37,18 @@ const cursorOnly = [
   "Custom Modes",
 ]
 
+// Relative references that must be made absolute for the translated cache, or a
+// model cannot open them to reach the delegation step inside a playbook. The
+// backticked `<path>` is the skill-folder placeholder; bare `<path>` in shell
+// commands is an intentional template the model fills in, so it is not flagged.
+const relativeRefs = [
+  "`<path>`",
+  "this file's absolute path",
+  "`../<name>/SKILL.md`",
+  "`../playbooks/",
+  "`../references/",
+]
+
 function walk(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name)
@@ -61,6 +73,7 @@ for (const item of [...skills, ...agents]) {
   const text = translateText(item.content ?? item.system, "ROOT")
   report(item.id, text, forbidden, true)
   report(item.id, text, cursorOnly, true)
+  report(item.id, text, relativeRefs, true)
 }
 
 const { root } = ensureTranslated()
@@ -69,6 +82,7 @@ for (const file of walk(root)) {
   if (!file.endsWith(".md")) continue
   const text = readFileSync(file, "utf8")
   report(file, text, forbidden, false)
+  report(file, text, relativeRefs, false)
   if (skillRoots.some((directory) => file.startsWith(directory))) report(file, text, cursorOnly, false)
 }
 

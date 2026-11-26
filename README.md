@@ -103,7 +103,7 @@ The sheet is read fresh on every request, so editing it takes effect immediately
 
 ### Do rigorous work with `/poteto-mode`
 
-`/poteto-mode <task>` is the main entry point. It matches your task to one of the 22 playbooks, opens a todo list of the playbook's steps, and routes to the other skills as needed. Examples:
+`/poteto-mode <task>` is the main entry point. It makes pstack the **controlling engineering methodology for that session**: it matches your task to one of the 22 playbooks, opens a todo list of the playbook's steps, delegates implementation to subagents, and routes to the other skills as needed. The methodology stays active for the rest of the session — through follow-up messages and context compaction — and other sessions are left untouched. Examples:
 
 ```
 /poteto-mode this form submits twice on double-click; find the root cause and fix it.
@@ -130,23 +130,27 @@ When you spawn a subagent **without** naming a model, the plugin assigns it from
 
 ```mermaid
 flowchart TD
-    A[User runs /poteto-mode] --> B[Skill matches task to a playbook]
-    B --> C[Main session owns playbook + todo list]
-    C --> D[Delegates to subagents]
-    D --> E[Model sheet routes each role's model]
-    C --> F[Independent review / verification]
-    E --> D
-    F --> G[Ship or iterate]
+    A[User runs /poteto-mode] --> B[Plugin records the mode for the session]
+    B --> C[Skill matches task to a playbook]
+    C --> D[Main session owns playbook + todo list]
+    D --> E[Delegates to subagents]
+    E --> F[Model sheet routes each role's model]
+    D --> G[Independent review / verification]
+    F --> E
+    G --> H[Ship or iterate]
 
-    H[context hook] --> I[Injects mapping + mandate + model sheet every request]
-    I --> C
+    I[context hook] -->|poteto-mode active| J[Injects mapping + methodology + sheet every call]
+    J --> D
+    I -->|plain session| K[Injects nothing - OpenCode unchanged]
+    L[compaction hook] -->|records active mode| D
 ```
 
 The port adds three layers on top of the unchanged pstack content:
 
 1. **Registration** — every skill, playbook, principle, and agent is translated from Cursor paths and tool names to OpenCode equivalents, then registered as a skill, command, and subagent.
-2. **Routing** — a session hook injects the OpenCode mapping, the pstack routing mandate, and the model sheet into every request.
-3. **Model sheet** — `/setup-pstack` writes a per-role model mapping that the agents and the model hook read.
+2. **Gated routing** — a session hook injects the OpenCode mapping, the controlling action layer (for `/poteto-mode`) or routing mandate (for the other skills), and the model sheet — but only for a session that activated a pstack skill or a `pstack:*` subagent. Plain sessions keep OpenCode's default behavior. The action layer identifies the playbook and requires reading it in full, without duplicating its rules.
+3. **Persistence** — activating a skill records the mode in a session instruction entry, so the methodology stays active through follow-ups, context compaction, and plugin reloads.
+4. **Model sheet** — `/setup-pstack` writes a per-role model mapping that the agents and the model hook read.
 
 ---
 

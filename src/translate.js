@@ -19,7 +19,7 @@ import { vendorRoot } from "./paths.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
 
 const CACHE_BASE = join(homedir(), ".local", "share", "opencode", "pstack-translated")
-const TRANSLATION_VERSION = 18
+const TRANSLATION_VERSION = 19
 
 const SWARM_ORIGINAL =
   'Spawn all N workers in one message with `subagent_type: generalPurpose`, `environment: "cloud"`, `run_in_background: true`, and the step 3 model, left unset for `auto` or `inherit-parent`. Use `environment: "local"` only when the worker needs access to something on the user\'s computer.'
@@ -227,14 +227,24 @@ export function translateText(text, root = vendorRoot) {
     /Transcripts live at `[^`]+`[^\n]*/g,
     "Transcripts are OpenCode sessions. Use `opencode session list --format json` to list this workspace's sessions, then `opencode session export <id>` to read one. Every export holds the full message history.",
   )
-  // Playbooks and worker.md are referenced relative to the skill folder. In
-  // Cursor that folder is known; in OpenCode it is the translated cache, so make
-  // the references absolute or a model cannot open them to reach the delegation
-  // step inside a playbook.
+  // Playbooks, references, worker.md, and the sibling-skill path are referenced
+  // relative to the skill folder. In Cursor that folder is known; in OpenCode it
+  // is the translated cache, so make every reference absolute or a model cannot
+  // open it to reach the delegation step inside a playbook.
   const skillsRoot = root.replaceAll("\\", "/")
-  output = output.replaceAll("`playbooks/", `\`${skillsRoot}/skills/poteto-mode/playbooks/`)
-  output = output.replaceAll("<path>/worker.md", `${skillsRoot}/skills/poteto-mode/worker.md`)
-  output = output.replaceAll("<path>/", `${skillsRoot}/skills/poteto-mode/`)
+  const modeDir = `${skillsRoot}/skills/poteto-mode`
+  output = output.replaceAll("`playbooks/", `\`${modeDir}/playbooks/`)
+  output = output.replaceAll("`../playbooks/", `\`${modeDir}/playbooks/`)
+  output = output.replaceAll("`../references/", `\`${modeDir}/references/`)
+  output = output.replaceAll("`../<name>/SKILL.md`", `\`${skillsRoot}/skills/<name>/SKILL.md\``)
+  output = output.replaceAll("<path>/worker.md", `${modeDir}/worker.md`)
+  output = output.replaceAll("<path>/", `${modeDir}/`)
+  output = output.replaceAll("`<path>`", `\`${modeDir}\``)
+  output = output.replaceAll("this file's absolute path", `\`${modeDir}/SKILL.md\``)
+  output = output.replaceAll(
+    "references/feature-map-example/",
+    `${skillsRoot}/skills/create-verification-skill/references/feature-map-example/`,
+  )
   return output
 }
 
@@ -294,6 +304,12 @@ export function ensureTranslated() {
   copyTree(join(vendorRoot, "skills"), join(root, "skills"), root, { translate: true })
   writeFileSync(join(root, "skills", "setup-pstack", "SKILL.md"), SETUP_SKILL_BODY)
   copyTree(join(vendorRoot, "agents"), join(root, "agents"), root, { translate: true })
+  // The action layer requires the playbooks to exist at runtime. Fail loudly here
+  // rather than let a model silently proceed without the playbook it must read.
+  const playbooksDir = join(root, "skills", "poteto-mode", "playbooks")
+  if (!existsSync(playbooksDir) || readdirSync(playbooksDir).length === 0) {
+    throw new Error(`pstack playbooks are missing from the translated cache: ${playbooksDir}`)
+  }
   if (existsSync(join(vendorRoot, "docs", "guide"))) {
     copyTree(join(vendorRoot, "docs", "guide"), join(root, "docs", "guide"), root, { translate: true })
   }

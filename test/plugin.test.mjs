@@ -9,7 +9,7 @@ import agents from "../src/data/agents.js"
 import commands from "../src/data/commands.js"
 import skills from "../src/data/skills.js"
 import { formatCatalog, modelCatalog, vendorFamily } from "../src/models.js"
-import { MANDATE, SETUP_OVERRIDE, mapping } from "../src/overlay.js"
+import { MANDATE, SETUP_OVERRIDE, mapping, methodology } from "../src/overlay.js"
 import { portable, vendorRoot } from "../src/paths.js"
 import { ensureModelSheet } from "../src/setup.js"
 import { hookEnabled, normalizeSheet, recommendedSheet } from "../src/sheet.js"
@@ -74,6 +74,7 @@ function mockContext(options = {}) {
     session: { parentID: undefined },
     sessions: {},
     models: CATALOG,
+    instructionEntries: {},
   }
 
   const ctx = {
@@ -111,6 +112,18 @@ function mockContext(options = {}) {
       hook: async (name, callback) => registered.hooks.push({ name, callback }),
       get: async (input) => ({ data: registered.sessions[input?.sessionID] ?? registered.session }),
       prompt: async (input) => registered.prompts.push(input),
+      instructions: {
+        entry: {
+          list: async (input) => ({ data: registered.instructionEntries[input?.sessionID] ?? [] }),
+          put: async (input) => {
+            const list = (registered.instructionEntries[input?.sessionID] ??= [])
+            const existing = list.find((entry) => entry.key === input.key)
+            if (existing) existing.value = input.value
+            else list.push({ key: input.key, value: input.value })
+          },
+          remove: async () => {},
+        },
+      },
     },
   }
 
@@ -124,8 +137,11 @@ test("registers every skill, command, and agent", async () => {
   assert.equal(registered.skills.length, 60)
   assert.equal(registered.commands.length, 60)
   assert.equal(registered.agents.length, 3)
-  assert.equal(registered.hooks.length, 2)
-  assert.deepEqual(registered.hooks.map((hook) => hook.name).sort(), ["context", "experimental.model.resolve"])
+  assert.equal(registered.hooks.length, 3)
+  assert.deepEqual(
+    registered.hooks.map((hook) => hook.name).sort(),
+    ["compaction", "context", "experimental.model.resolve"],
+  )
 })
 
 test("registered skills use the translated cache and contain no Cursor-only text", async () => {
@@ -181,6 +197,36 @@ test("agent fallback uses the translated root path", () => {
   const text = translateText(agent.system, "ROOT")
   assert.ok(text.includes("ROOT/"))
   assert.ok(!text.includes("the pstack root"))
+})
+
+test("poteto-mode resolves sibling, playbook, reference, and worker paths absolutely", () => {
+  const skill = skills.find((item) => item.id === "pstack-poteto-mode")
+  const text = translateText(skill.content, "ROOT")
+  assert.ok(text.includes("`ROOT/skills/<name>/SKILL.md`"), "sibling skill path is absolute")
+  assert.ok(text.includes("ROOT/skills/poteto-mode/worker.md"), "worker path is absolute")
+  assert.ok(text.includes("ROOT/skills/poteto-mode/playbooks/"), "playbook path is absolute")
+  assert.ok(!text.includes("<path>"), "no unresolved <path> placeholder")
+  assert.ok(!text.includes("this file's absolute path"), "no unresolved relative phrase")
+})
+
+test("methodology is an action layer that identifies the playbook without duplicating its rules", () => {
+  const text = methodology("ROOT")
+  assert.ok(text.includes("controlling engineering methodology"), "states precedence")
+  assert.ok(text.includes("match the task to one of the playbooks"), "identifies the playbook step")
+  assert.ok(text.includes("feature") && text.includes("bug-fix") && text.includes("refactoring"), "names the code playbooks")
+  assert.ok(text.includes("read it in full"), "requires a full playbook read")
+  assert.ok(text.includes("single source of truth"), "delegates authority to the playbook")
+  assert.ok(text.includes("do not skip, summarize, or substitute any step"), "forbids substituting its own rules")
+  assert.ok(text.includes("If you cannot read the matching playbook, stop and report"), "fails explicitly on a missing playbook")
+  assert.ok(text.includes("ROOT/skills/poteto-mode/SKILL.md"), "points at the full skill")
+  assert.ok(text.includes("ROOT/skills/poteto-mode/playbooks/"), "points at the playbooks")
+  assert.ok(text.includes("non-negotiables") && text.includes("principles") && text.includes("subagent rules"), "points at the skill sections")
+  // The action layer must NOT duplicate the playbook's rules.
+  assert.ok(!text.includes("Mandatory: no skip-with-reason escape"), "does not copy the delegation mandate")
+  assert.ok(!text.includes("Verify on the matching surface"), "does not copy the verification rule")
+  assert.ok(!text.includes('agent: "pstack:poteto-agent"'), "does not copy the subagent field")
+  assert.ok(!text.includes("Cursor"), "no Cursor references")
+  assert.ok(text.trim().endsWith("</pstack_poteto_mode>"), "block is closed")
 })
 
 test("explicit variants survive the budget", () => {
@@ -298,7 +344,7 @@ test("ensureModelSheet updates an existing sheet in place", () => {
   }
 })
 
-test("root sessions receive mapping, routing, and the normalized model sheet", async () => {
+test("poteto-mode sessions receive mapping, methodology, and the model sheet", async () => {
   const directory = mkdtempSync(join(tmpdir(), "pstack-hook-"))
   const target = join(directory, "pstack-models.md")
   try {
@@ -306,13 +352,15 @@ test("root sessions receive mapping, routing, and the normalized model sheet", a
     const { ctx, registered } = mockContext({ modelsPath: target })
     await plugin.setup(ctx)
 
-    const event = { sessionID: "root", system: [] }
+    const command = registered.commands.find((item) => item.name === "poteto-mode")
+    await command.execute({ sessionID: "root", prompt: { text: "x" }, delivery: "steer" })
+
+    const event = { sessionID: "root", agent: "build", system: [] }
     await registered.hooks.find((hook) => hook.name === "context").callback(event)
 
     const text = event.system.map((part) => part.text).join("\n")
     assert.ok(text.includes("<pstack_opencode_mapping>"))
-    assert.ok(text.includes("pstack-translated"))
-    assert.ok(text.includes(MANDATE))
+    assert.ok(text.includes("<pstack_poteto_mode>"))
     assert.ok(text.includes("<pstack_model_sheet>"))
     assert.ok(text.includes("feature, refactoring: alpha/one#xhigh"))
   } finally {
@@ -320,17 +368,27 @@ test("root sessions receive mapping, routing, and the normalized model sheet", a
   }
 })
 
-test("child sessions receive mapping but not routing", async () => {
+test("pstack subagents receive mapping but not methodology or routing", async () => {
   const { ctx, registered } = mockContext()
-  registered.session = { parentID: "root" }
   await plugin.setup(ctx)
 
-  const event = { sessionID: "child", system: [] }
+  const event = { sessionID: "child", agent: "pstack:poteto-agent", system: [] }
   await registered.hooks.find((hook) => hook.name === "context").callback(event)
 
   const text = event.system.map((part) => part.text).join("\n")
   assert.ok(text.includes("<pstack_opencode_mapping>"))
+  assert.ok(!text.includes("<pstack_poteto_mode>"))
   assert.ok(!text.includes(MANDATE))
+})
+
+test("normal sessions receive no pstack injection", async () => {
+  const { ctx, registered } = mockContext()
+  await plugin.setup(ctx)
+
+  const event = { sessionID: "plain", agent: "build", system: [] }
+  await registered.hooks.find((hook) => hook.name === "context").callback(event)
+
+  assert.equal(event.system.length, 0)
 })
 
 test("context uses the current sheet after setup", async () => {
@@ -341,9 +399,12 @@ test("context uses the current sheet after setup", async () => {
     const { ctx, registered } = mockContext({ modelsPath: target })
     await plugin.setup(ctx)
 
+    const command = registered.commands.find((item) => item.name === "poteto-mode")
+    await command.execute({ sessionID: "root", prompt: { text: "x" }, delivery: "steer" })
+
     writeFileSync(target, "# budget: large (xhigh)\nbug-fix: beta/two#high\n")
-    const event = { sessionID: "root", system: [] }
-    await registered.hooks[0].callback(event)
+    const event = { sessionID: "root", agent: "build", system: [] }
+    await registered.hooks.find((hook) => hook.name === "context").callback(event)
 
     const text = event.system.map((part) => part.text).join("\n")
     assert.ok(text.includes("bug-fix: beta/two#high"))
@@ -351,6 +412,20 @@ test("context uses the current sheet after setup", async () => {
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test("compaction records the active mode for a poteto-mode session", async () => {
+  const { ctx, registered } = mockContext()
+  await plugin.setup(ctx)
+
+  const command = registered.commands.find((item) => item.name === "poteto-mode")
+  await command.execute({ sessionID: "root", prompt: { text: "x" }, delivery: "steer" })
+
+  const event = { sessionID: "root", messages: [] }
+  await registered.hooks.find((hook) => hook.name === "compaction").callback(event)
+
+  assert.equal(event.messages.length, 1)
+  assert.match(event.messages[0].text, /Poteto Mode/)
 })
 
 test("resolve hook switches within a provider and leaves explicit or cross-provider models", async () => {

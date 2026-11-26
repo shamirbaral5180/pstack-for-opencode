@@ -44,6 +44,33 @@ export const MANDATE = `<pstack_routing>
 pstack is installed. Invoke the \`pstack-poteto-mode\` skill and follow it when a task touches more than one file, changes a signature other files call, involves a design or architecture choice, or is a bug whose cause is not known or a performance issue. For a specific intent, load that skill directly, such as \`pstack-tdd\`, \`pstack-architect\`, \`pstack-how\`, \`pstack-why\`, \`pstack-arena\`, or \`pstack-interrogate\`. For a contained change to one file with an obvious test, a question, or a one-line edit, work directly and verify on the real artifact. The user's entry point is the \`/poteto-mode\` command. User instructions take precedence.
 </pstack_routing>`
 
+// The action layer injected into a session once `/poteto-mode` is triggered. It
+// does NOT duplicate, summarize, or modify the playbook rules: it only identifies
+// the matching playbook, requires reading and following it in full, and fails
+// explicitly if the playbook cannot be read. The playbook remains the single
+// source of truth; the skill holds the non-negotiables, principles, and subagent
+// rules.
+export function methodology(root) {
+  const skills = portable(root)
+  const dir = `${skills}/skills/poteto-mode`
+  const playbooks = [
+    "investigation", "bug-fix", "perf-issue", "hillclimb", "runtime-forensics",
+    "trace-forensics", "feature", "refactoring", "prototype", "visual-parity",
+    "authoring-a-skill", "eval", "babysit", "shipping", "autonomous-run",
+    "autopilot-full", "autopilot-stack", "session-pickup", "pause-safely",
+    "multi-phase-plan", "worktree-cleanup", "opening-a-pr",
+  ].join(", ")
+  return `<pstack_poteto_mode>
+Poteto Mode is the controlling engineering methodology for this session. Where other guidance in this context conflicts, the poteto-mode playbooks control how you plan, delegate, review, and verify work. OpenCode's environment, tools, permissions, and security rules still apply unchanged.
+
+Required before any implementation: match the task to one of the playbooks at \`${dir}/playbooks/\` — ${playbooks} — and read it in full. The playbook is the single source of truth for the task's steps. Copy its steps into the todo list and follow them exactly; do not skip, summarize, or substitute any step.
+
+If you cannot read the matching playbook, stop and report the failure instead of proceeding without it.
+
+The poteto-mode skill at \`${dir}/SKILL.md\` (also attached to your first message) holds the non-negotiables, the principles, and the subagent rules.
+</pstack_poteto_mode>`
+}
+
 export const SETUP_OVERRIDE = `<pstack_opencode_setup>
 OpenCode setup override. Write the model sheet to \`${models}\`, not to \`~/.cursor/rules/pstack-models.mdc\`. Write plain Markdown, not an \`.mdc\` rule with \`alwaysApply\`.
 

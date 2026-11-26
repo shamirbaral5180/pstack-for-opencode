@@ -1,6 +1,8 @@
-import { workflowIssue } from "./workflow.js"
+import { implementationIssue } from "./implementation.js"
+import { TODO_TOOL, workflowIssue } from "./workflow.js"
 
-export const TODO_TOOL = "pstack_todowrite"
+export { TODO_TOOL } from "./workflow.js"
+
 const TODO_KEY = "pstack-workflow-todos"
 
 export function registerTodos(ctx, activeMode, sources) {
@@ -10,7 +12,7 @@ export function registerTodos(ctx, activeMode, sources) {
   return ctx.tool.transform((editor) => {
     editor.add({
       name: TODO_TOOL,
-      description: "Read or replace the current pstack session's workflow todo list. Omit todos to read it. For Poteto Mode, set workflow to the selected playbook (playbooks/<title>.md) or the selected workflow skill's name, after loading it. Use the original numbered step or phase letter as each item's step ID (start for a Start section). Leave IDs off extra items. Report blockers rather than closing unexecuted steps.",
+      description: "Read or replace the pstack session's todo list. Omit todos to read it. Name the selected upstream workflow and keep original step IDs. Leave IDs off extra items. For a step requiring implementation delegation, save it in progress with paths set to the project-relative files to be implemented, and name those files in the worker's brief. Keep paths on updates. Advancing requires observed worker changes. Report blockers rather than closing unexecuted steps.",
       options: { codemode: false },
       input: {
         type: "object",
@@ -28,6 +30,7 @@ export function registerTodos(ctx, activeMode, sources) {
                 step: { type: "string", pattern: "^(start|[A-Z]|[0-9]+)$" },
                 content: { type: "string", minLength: 1, maxLength: 250 },
                 status: { type: "string", enum: ["pending", "in_progress", "completed", "blocked"] },
+                paths: { type: "array", maxItems: 100, items: { type: "string", minLength: 1 } },
               },
             },
           },
@@ -60,6 +63,8 @@ export function registerTodos(ctx, activeMode, sources) {
           if (!Array.isArray(messages) || messages.length === 0) throw new Error("OpenCode did not supply session evidence. Checklist update could not be validated.")
           const check = workflowIssue(source, todos, messages, sources, workflow === saved.workflow ? saved.verified : undefined)
           if (typeof check === "string") throw new Error(check)
+          const handoff = await implementationIssue(ctx, { sessionID, source, todos, messages, sources })
+          if (handoff) throw new Error(`pstack workflow checkpoint: ${handoff}`)
           value = { workflow, todos, verified: check.verified }
         }
         await entries.put({ sessionID, key: TODO_KEY, value })

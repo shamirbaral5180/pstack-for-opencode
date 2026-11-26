@@ -152,8 +152,15 @@ The port adds three layers on top of the unchanged pstack content:
 3. **Persistence** — activating a skill records the mode in a session instruction entry, so the methodology stays active through follow-ups, context compaction, and plugin reloads.
 4. **Model sheet** — `/setup-pstack` writes a per-role model mapping that the agents and the model hook read.
 
-When the active session lacks native `todowrite`, pstack exposes `pstack_todowrite`. Its list is stored in OpenCode's session instruction entries, not in a repository file or the native Desktop todo panel.
-In Poteto Mode, the fallback validates checklist updates against the workflow the main agent selected. A pre-tool checkpoint also checks direct edits, new subagent calls, and recognized review and delivery commands against observable prerequisites. It does not choose a route, infer conditional decisions, or certify that a loaded skill was applied.
+When the active session lacks native `todowrite`, pstack exposes `pstack_todowrite`. Its list is stored in OpenCode's session instruction entries, not in a repository file or the native Desktop todo panel. When the host has native `todowrite`, pstack uses it and drops the fallback.
+
+In Poteto Mode the checklist and a pre-tool checkpoint validate observable prerequisites against the selected playbook, without choosing a route or inferring conditional decisions:
+
+- **Unconditional skill prerequisites.** Steps that say to use, run, or apply a skill — for example Feature step 2's `architect`, Bug fix step 2's `why`, and the `sequence-verifiable-units` reference — must be loaded in full before the checklist advances past them. Conditional clauses (`if`, `when`, `unless`) are never promoted to requirements.
+- **Mandatory implementation handoff.** A playbook step that delegates code to a subagent requires an attributable worker change, not just a spawn. On the fallback list, the main agent must first save the step in progress with the project-relative implementation `paths`, name those files in the worker's brief, and load the step's mandatory principle leaf. A successful worker edit or write whose diff matches a declared path satisfies the handoff; a shell-only change does not.
+- **Observed, not blocked, shell effects.** A shared snapshot that shows workspace changes during a shell or Code Mode step is reported as an observation — it cannot identify the writer, so investigation, scaffolding, and verification proceed, but a shell-only change never satisfies a delegation step.
+
+The checkpoint is an evidence check, not a security boundary: it cannot attribute arbitrary shell writes to a specific agent, detect work done outside observable tools, or prove that a loaded skill was actually applied.
 
 ---
 

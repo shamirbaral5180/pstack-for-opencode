@@ -132,7 +132,7 @@ export default {
     const activeTodoMode = async (sessionID) => hookEnabled(readSheet(sheetPath)) ? getMode(sessionID) : undefined
     const sources = workflowSources(translated.root, skills)
     await registerTodos(ctx, activeTodoMode, sources)
-    await registerCompliance(ctx, async (sessionID) => (await activeTodoMode(sessionID)) === POTETO, sources)
+    const observeWorkspace = await registerCompliance(ctx, async (sessionID) => (await activeTodoMode(sessionID)) === POTETO, sources)
 
     await ctx.skill.transform((editor) => {
       for (const skill of allSkills) {
@@ -212,6 +212,10 @@ export default {
       // `/poteto-mode`, or routing for the other pstack skills, plus the sheet.
       if (mode && !isPstackAgent && hookOn) {
         parts.push(mode === POTETO ? METHODOLOGY : MANDATE, todoMapping(event.tools))
+        if (mode === POTETO) {
+          const observation = await observeWorkspace?.(event.sessionID)
+          if (observation) parts.push(`<pstack_workspace_observation>\n${observation}\n</pstack_workspace_observation>`)
+        }
         const normalized = currentSheet.trim() ? normalizeSheet(currentSheet, catalog) : ""
         if (normalized) parts.push(`<pstack_model_sheet>\n${normalized.trim()}\n</pstack_model_sheet>`)
       }

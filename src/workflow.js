@@ -2,6 +2,8 @@ import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { portable, vendorRoot } from "./paths.js"
 
+export const TODO_TOOL = "pstack_todowrite"
+
 function requiredSkill(text, registered) {
   if (/\b(if|when|unless|only|optional|otherwise|or)\b/i.test(text)) return
   const match = /^`([\w-]+)` for [^.!?]+[.!?]?$/.exec(text)
@@ -10,13 +12,41 @@ function requiredSkill(text, registered) {
   return registered.get(match?.[1])
 }
 
+function stepEvidence(line, step, registered) {
+  for (const sentence of line.trim().replace(/^- /, "").split(/(?<=[.!?])\s+/)) {
+    if (/\b(?:if|when|unless|optional|otherwise)\b/i.test(sentence)) continue
+    const handoff = /^(?:Delegate (?:code-writing|implementation|the mechanical edits)|Hand the change) to a subagent\b/.test(sentence)
+    if (handoff) step.handoff ??= []
+    const invoked = /^(?:Use|Apply|Run) the \*\*([\w-]+)\*\* (principle )?skill\b/.exec(sentence)
+    const references = [
+      ...(invoked ? [invoked[2] && !invoked[1].startsWith("principle-") ? `principle-${invoked[1]}` : invoked[1]] : []),
+      ...[...sentence.matchAll(/\bper \*\*(principle-[\w-]+)\*\*/g)].map((match) => match[1]),
+    ]
+    const seeded = /^Seed them with .+ and the \*\*([\w-]+)\*\* skill\b/.exec(sentence)
+    if (seeded) references.push(seeded[1])
+    for (const name of references) {
+      const id = registered.get(name)
+      const required = handoff ? step.handoff : step.skills
+      if (id && !required.includes(id)) required.push(id)
+    }
+  }
+}
+
 export function workflowRequirements(text, registered, isPlaybook = false) {
   const lines = text.split(/\r?\n/)
   const steps = []
   if (isPlaybook) {
+    let step
     for (const line of lines) {
       const item = /^(\d+)\. (.+)$/.exec(line)
-      if (item) steps.push({ id: item[1], title: item[2], skill: requiredSkill(item[2], registered) })
+      if (item) {
+        const skill = requiredSkill(item[2], registered)
+        step = { id: item[1], title: item[2], skills: skill ? [skill] : [] }
+        steps.push(step)
+        stepEvidence(item[2], step, registered)
+      } else if (step && line.startsWith(" ")) {
+        stepEvidence(line, step, registered)
+      } else if (line) step = undefined
     }
     if (new Set(steps.map((step) => step.id)).size !== steps.length) return []
   } else if (/^Open a todolist\b/m.test(text)) {
@@ -24,12 +54,13 @@ export function workflowRequirements(text, registered, isPlaybook = false) {
     for (const line of lines) {
       const heading = /^## (Start|Phase ([A-Z]))(?:[.:] .+)?$/.exec(line)
       if (heading) {
-        step = { id: heading[2] ?? "start", title: line.slice(3) }
+        step = { id: heading[2] ?? "start", title: line.slice(3), skills: [] }
         steps.push(step)
       } else if (line.startsWith("## ")) {
         step = undefined
-      } else if (step && !step.skill) {
-        step.skill = requiredSkill(line.split(/(?<=[.!?])\s/)[0], registered)
+      } else if (step && !step.skills.length) {
+        const id = requiredSkill(line.split(/(?<=[.!?])\s/)[0], registered)
+        if (id) step.skills.push(id)
       }
     }
   }
@@ -82,7 +113,10 @@ export function loadedSources(messages, sources) {
         }
       } else if (call.name === "skill") {
         const item = byId.get(input?.id ?? input?.name) ?? sources.get(input?.name)
-        if (item?.id) evidence.add(item.name)
+        if (item?.id && call.state.metadata?.truncated === false &&
+          call.state.content?.some((part) => part.type === "text" && part.text.includes("</skill_content>"))) {
+          evidence.add(item.name)
+        }
       }
     }
   }
@@ -92,6 +126,16 @@ export function loadedSources(messages, sources) {
 export function toolCalls(messages) {
   return messages.filter((message) => message.type === "assistant")
     .flatMap((message) => (message.content ?? []).filter((call) => call.type === "tool"))
+}
+
+export function pastStep(source, step, todos) {
+  const status = new Map(todos.map((item) => [item.step, item.status]))
+  return status.get(step.id) === "completed" || source.steps.slice(source.steps.indexOf(step) + 1).some((later) =>
+    ["in_progress", "completed"].includes(status.get(later.id)))
+}
+
+export function missingLoad(ids, seen, sources) {
+  return [...sources.values()].find((source) => ids.includes(source.id) && !seen.has(source.name))
 }
 
 export function workflowIssue(source, todos, messages, sources, verified = []) {
@@ -110,17 +154,15 @@ export function workflowIssue(source, todos, messages, sources, verified = []) {
   const missing = source.steps.filter((step) => !byStep.has(step.id))
   if (missing.length) return `Add the missing upstream checklist entries from ${source.path}: ${missing.map((step) => `${step.id} (${step.title.slice(0, 90)})`).join(", ")}.`
 
-  const resolved = new Set(verified)
-  resolved.add(source.name)
-  const states = source.steps.map((step) => byStep.get(step.id).status)
-  for (const [index, step] of source.steps.entries()) {
-    if (!step.skill) continue
-    if (states[index] !== "completed" && !states.slice(index + 1).some((status) => status === "in_progress" || status === "completed")) continue
-    const skill = [...sources.values()].find((item) => item.id === step.skill)
-    if (!(resolved.has(skill.name) || loaded.has(skill.name))) {
+  const resolved = new Set([...verified, ...loaded])
+  for (const step of source.steps) {
+    if (!pastStep(source, step, todos)) continue
+    const skill = missingLoad(step.skills, resolved, sources)
+    if (skill) {
       return `Step ${step.id} of ${source.path} requires ${skill.name}. Load ${skill.path} in full and apply it before advancing; no successful full load is visible. If blocked, report the blocker and leave the step open.`
     }
-    resolved.add(skill.name)
   }
-  return { verified: [...resolved] }
+  const required = new Set(source.steps.filter((step) => pastStep(source, step, todos)).flatMap((step) => step.skills))
+  return { verified: [source.name, ...[...sources.values()]
+    .filter((item) => required.has(item.id) && resolved.has(item.name)).map((item) => item.name)] }
 }

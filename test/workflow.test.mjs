@@ -3,7 +3,7 @@ import test from "node:test"
 import { actionFor, inspectAction, observedActions, registerCompliance } from "../src/compliance.js"
 import skills from "../src/data/skills.js"
 import { ensureTranslated } from "../src/translate.js"
-import { workflowIssue, workflowRequirements, workflowSources } from "../src/workflow.js"
+import { loadedSources, workflowIssue, workflowRequirements, workflowSources } from "../src/workflow.js"
 
 const sources = workflowSources(ensureTranslated().root, skills)
 const feature = sources.get("playbooks/feature.md")
@@ -29,7 +29,7 @@ const read = (name, { truncated = false, offset = 1, status = "completed" } = {}
 
 test("skipping an unconditional upstream skill blocks checklist advancement, then a real load clears it", () => {
   const seen = [read(feature.name)]
-  assert.equal(feature.steps.find((step) => step.skill)?.skill, "pstack-architect")
+  assert.deepEqual(feature.steps.find((step) => step.id === "2").skills, ["pstack-architect"])
   assert.equal(typeof workflowIssue(feature, checklist(feature, "2"), seen, sources), "object")
   assert.match(workflowIssue(feature, checklist(feature, "4"), seen, sources), /Step 2.*requires architect/)
   assert.deepEqual(workflowIssue(feature, checklist(feature, "4"), [...seen, skill("architect")], sources), {
@@ -40,11 +40,15 @@ test("skipping an unconditional upstream skill blocks checklist advancement, the
 })
 
 test("conditional skills are not promoted to unconditional prerequisites", () => {
-  assert.equal(figure.steps.find((step) => step.id === "B").skill, undefined)
-  assert.equal(figure.steps.find((step) => step.id === "D").skill, "pstack-show-me-your-work")
+  assert.deepEqual(figure.steps.find((step) => step.id === "B").skills, [])
+  assert.deepEqual(figure.steps.find((step) => step.id === "D").skills, ["pstack-show-me-your-work"])
   assert.equal(typeof workflowIssue(figure, checklist(figure, "C"), [skill("figure-it-out")], sources), "object")
   assert.match(workflowIssue(figure, checklist(figure, "E"), [skill("figure-it-out")], sources), /requires show-me-your-work/)
-  assert.equal(typeof workflowIssue(feature, checklist(feature, "8"), [read(feature.name), skill("architect")], sources), "object")
+  assert.match(workflowIssue(feature, checklist(feature, "8"), [read(feature.name), skill("architect")], sources),
+    /requires principle-sequence-verifiable-units/)
+  assert.equal(typeof workflowIssue(feature, checklist(feature, "8"), [
+    read(feature.name), skill("architect"), skill("principle-sequence-verifiable-units"),
+  ], sources), "object")
 })
 
 test("failed, partial, incidental, stale, and self-reported loads are not evidence for the selected workflow", () => {
@@ -66,13 +70,37 @@ test("failed, partial, incidental, stale, and self-reported loads are not eviden
 test("ambiguous numbering and optional prose do not create gates", () => {
   const registry = new Map([["architect", "pstack-architect"]])
   assert.deepEqual(workflowRequirements("1. Trace\n1. `architect` for the shape.", registry, true), [])
-  assert.equal(workflowRequirements("1. If contested, `architect` for the shape.", registry, true)[0].skill, undefined)
+  assert.deepEqual(workflowRequirements("1. If contested, `architect` for the shape.", registry, true)[0].skills, [])
+  assert.equal(workflowRequirements("1. Delegate implementation to a subagent if useful.", registry, true)[0].handoff, undefined)
+  assert.deepEqual(workflowRequirements("1. If contested, `architect` first. Delegate implementation to a subagent.", registry, true)[0].handoff, [])
 })
 
 const user = { type: "user", time: { created: 1 } }
 const action = (name, input, status = "completed", metadata) => ({
   type: "assistant", time: { created: 4 },
   content: [{ type: "tool", id: `call-${name}`, name, state: { status, input, metadata } }],
+})
+
+test("only a complete skill tool result is evidence of a leaf load", () => {
+  const leaf = "principle-model-the-domain"
+  const input = { id: `pstack-${leaf}` }
+  const result = (text, truncated) => {
+    const msg = action("skill", input, "completed", { truncated })
+    msg.content[0].state.content = [{ type: "text", text }]
+    return msg
+  }
+  assert.equal(loadedSources([result("<skill_content>sample", false)], sources).has(leaf), false)
+  assert.equal(loadedSources([result("<skill_content>sample</skill_content>", true)], sources).has(leaf), false)
+  assert.equal(loadedSources([result("<skill_content>sample</skill_content>", false)], sources).has(leaf), true)
+  assert.equal(loadedSources([read(leaf, { offset: 2 })], sources).has(leaf), false)
+  assert.equal(loadedSources([read(leaf)], sources).has(leaf), true)
+})
+
+test("bug investigation cannot advance past the explicit why load; conditional architect stays conditional", () => {
+  const bug = sources.get("playbooks/bug-fix.md")
+  const todos = checklist(bug, "3")
+  assert.match(workflowIssue(bug, todos, [user, read(bug.name)], sources), /requires why/)
+  assert.equal(typeof workflowIssue(bug, todos, [user, read(bug.name), read("why")], sources), "object")
 })
 
 test("direct writes, new delegations, and delivery can catch checklist bypass before tool execution", async () => {
@@ -110,7 +138,8 @@ test("rejects confirmed indexed checklist omissions and missing skills, not cond
 })
 
 test("review and PR creation check their source prerequisites without treating read-only commands as delivery", () => {
-  const trace = [user, read(feature.name), skill("architect"), action("todowrite", { todos: checklist(feature, "8") })]
+  const trace = [user, read(feature.name), skill("architect"), skill("principle-sequence-verifiable-units"),
+    action("todowrite", { todos: checklist(feature, "8") })]
   assert.match(inspectAction("review", trace, sources).message, /no-comments/)
   assert.match(inspectAction("opening-pr", trace, sources).message, /opening-a-pr\.md/)
   assert.match(inspectAction("review", [...trace, skill("no-comments")], sources).message, /no comment-sicko child session/)

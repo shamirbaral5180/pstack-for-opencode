@@ -267,7 +267,7 @@ test("fallback todos are session-scoped, durable, and preserve native permission
   registered.messages.push({ type: "skill", skill: "pstack-figure-it-out" })
   const todos = ["start", "A", "B", "C", "D", "E"].map((step) => ({ step, content: `Track ${step}`, status: "pending" }))
   await assert.rejects(tool.execute({ workflow: "figure-it-out", todos: todos.slice(1) }, call), /missing upstream checklist entries.*start/)
-  await assert.rejects(tool.execute({ workflow: "Feature", todos }, call), /`workflow` field must name the selected source exactly.*playbooks\//)
+  await assert.rejects(tool.execute({ workflow: "Feature", todos }, call), /Load .*playbooks\/feature\.md in full/)
   await tool.execute({ workflow: "figure-it-out", todos }, call)
   assert.equal(registered.permissionRequests[0].action, "todowrite")
   const reloaded = mockContext()
@@ -278,6 +278,35 @@ test("fallback todos are session-scoped, durable, and preserve native permission
   ctx.permission.assert = async () => { throw new Error("denied") }
   await assert.rejects(tool.execute({ todos: [] }, call), /denied/)
   assert.deepEqual(registered.instructionEntries.active.find((item) => item.key === "pstack-workflow-todos").value.todos, todos)
+})
+
+test("workflow aliases are saved canonically only after a successful load and validation", async () => {
+  const { ctx, registered } = mockContext()
+  await plugin.setup(ctx)
+  await registered.commands.find((item) => item.name === "poteto-mode")
+    .execute({ sessionID: "active", prompt: { text: "work" }, delivery: "steer" })
+  const tool = registered.tools.find((item) => item.name === TODO_TOOL)
+  const call = { sessionID: "active", agent: "build", messageID: "msg", id: "call" }
+  const todos = Array.from({ length: 8 }, (_, i) => ({ step: String(i + 1), content: `Track ${i + 1}`, status: "pending" }))
+  const route = "playbooks/feature.md"
+  const root = registered.skills.find((skill) => skill.id === "pstack-poteto-mode").path.replace(/SKILL\.md$/, "")
+  const path = `${root}${route}`
+  const lines = readFileSync(path, "utf8").trimEnd().split(/\r?\n/).length
+  const read = {
+    type: "tool", name: "read", state: {
+      input: { path }, status: "completed", metadata: { truncated: true },
+      content: [{ type: "text", text: `Read file ${path}, lines 1-${lines}\n...` }],
+    },
+  }
+  registered.messages.push({ type: "user" }, { type: "assistant", content: [read] })
+  await assert.rejects(tool.execute({ workflow: "feature", todos }, call), /No successful full load/)
+  read.state.metadata.truncated = false
+  for (const workflow of ["feature", "feature.md", route, undefined]) {
+    assert.deepEqual((await tool.execute({ workflow, todos }, call)).metadata, { pstackWorkflow: route })
+  }
+  await assert.rejects(tool.execute({ workflow: "featre", todos }, call), /Unknown workflow.*playbooks\/feature\.md/)
+  await assert.rejects(tool.execute({ workflow: "bug-fix", todos }, call), /Load .*playbooks\/bug-fix\.md in full/)
+  assert.deepEqual(JSON.parse((await tool.execute({}, call)).content), { workflow: route, todos, verified: [route] })
 })
 
 test("the adapter reports missing todo tooling instead of directing agents to a vanished tool", async () => {

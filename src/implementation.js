@@ -1,6 +1,6 @@
 import { isAbsolute, posix, relative, resolve } from "node:path"
 import { portable } from "./paths.js"
-import { currentTurn, loadedSources, missingLoad, pastStep, TODO_TOOL, toolCalls } from "./workflow.js"
+import { checklistWorkflow, currentTurn, loadedSources, missingLoad, pastStep, TODO_TOOL, toolCalls } from "./workflow.js"
 
 const pathKey = (path) => process.platform === "win32" ? path.toLowerCase() : path
 const payload = (response) => response?.data ?? response
@@ -62,7 +62,7 @@ function declarations(messages, source, step) {
   for (const { call, completed } of datedCalls(messages)) {
     const input = call.state?.input
     if (call.name !== TODO_TOOL || call.state.status !== "completed" || !Array.isArray(input?.todos)) continue
-    workflow = input.workflow ?? workflow
+    workflow = checklistWorkflow(call) ?? workflow
     if (workflow !== source.name || !Number.isFinite(completed)) continue
     const item = input.todos.find((item) => item.step === step.id)
     if (item?.status === "pending") paths.clear()

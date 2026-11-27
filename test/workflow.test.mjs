@@ -3,7 +3,7 @@ import test from "node:test"
 import { actionFor, inspectAction, observedActions, registerCompliance } from "../src/compliance.js"
 import skills from "../src/data/skills.js"
 import { ensureTranslated } from "../src/translate.js"
-import { loadedSources, workflowIssue, workflowRequirements, workflowSources } from "../src/workflow.js"
+import { loadedSources, resolveWorkflow, TODO_TOOL, workflowIssue, workflowRequirements, workflowSources } from "../src/workflow.js"
 
 const sources = workflowSources(ensureTranslated().root, skills)
 const feature = sources.get("playbooks/feature.md")
@@ -79,6 +79,52 @@ const user = { type: "user", time: { created: 1 } }
 const action = (name, input, status = "completed", metadata) => ({
   type: "assistant", time: { created: 4 },
   content: [{ type: "tool", id: `call-${name}`, name, state: { status, input, metadata } }],
+})
+
+test("workflow forms are derived from the entire upstream registry", () => {
+  for (const source of sources.values()) {
+    if (source.playbook) {
+      const file = source.name.split("/").at(-1)
+      for (const name of [source.name, file, file.replace(/\.md$/, "")]) {
+        assert.equal(resolveWorkflow(name, sources).source, source, name)
+      }
+    } else {
+      for (const name of [source.name, source.id]) assert.equal(resolveWorkflow(name, sources).source, source, name)
+    }
+  }
+  assert.equal(resolveWorkflow(" FEATURE.MD ", sources).source, feature)
+})
+
+test("ambiguous shorthand stays ambiguous even when only one matching source was loaded", () => {
+  const skill = { ...figure, id: "pstack-feature", name: "feature" }
+  const registry = new Map(sources).set(skill.name, skill)
+  const ambiguous = resolveWorkflow("feature", registry, [user, read(feature.name)])
+  assert.equal(ambiguous.source, undefined)
+  assert.match(ambiguous.error, /Ambiguous workflow "feature"/)
+  assert.match(ambiguous.error, /pstack-feature/)
+  assert.match(ambiguous.error, /playbooks\/feature\.md/)
+  assert.equal(resolveWorkflow("playbooks/feature.md", registry).source, feature)
+  assert.equal(resolveWorkflow("feature.md", registry).source, feature)
+  assert.equal(resolveWorkflow("pstack-feature", registry).source, skill)
+})
+
+test("typos and other paths receive suggestions, never a selected workflow", () => {
+  const trace = [user, read(feature.name)]
+  for (const name of ["featre", "other/feature.md", "bogus"]) {
+    const result = resolveWorkflow(name, sources, trace)
+    assert.equal(result.source, undefined)
+    assert.match(result.error, /Unknown workflow.*Possible sources:.*playbooks\/feature\.md/)
+  }
+  assert.match(resolveWorkflow(undefined, sources, trace).error, /Name the selected.*Possible sources:.*playbooks\/feature\.md/)
+})
+
+test("the pre-tool gate uses the canonical selection, not raw aliases or incidental loads", () => {
+  const trace = [user, read(feature.name), skill("figure-it-out"),
+    action(TODO_TOOL, { workflow: "feature", todos: checklist(feature, "4") }, "completed", { pstackWorkflow: feature.name })]
+  assert.match(inspectAction("mutation", trace, sources).message, /requires a successful load.*architect/)
+  const result = inspectAction("mutation", [...trace, skill("architect")], sources)
+  assert.equal(result.route, feature)
+  assert.equal(result.status, "observed")
 })
 
 test("only a complete skill tool result is evidence of a leaf load", () => {

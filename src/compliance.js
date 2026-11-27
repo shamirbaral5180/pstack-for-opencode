@@ -1,5 +1,5 @@
 import { implementationIssue, isMutation, mutationTargets, workspaceNotice } from "./implementation.js"
-import { currentTurn, loadedSources, missingLoad, pastStep, TODO_TOOL, toolCalls } from "./workflow.js"
+import { checklistWorkflow, currentTurn, loadedSources, missingLoad, pastStep, TODO_TOOL, toolCalls } from "./workflow.js"
 
 export function actionFor(tool, input) {
   if (isMutation(tool)) return "mutation"
@@ -38,8 +38,9 @@ function workflowState(messages, sources) {
   const seen = loadedSources(recent, sources)
   const calls = toolCalls(recent)
   const checklist = checklistFor(calls)
-  const declared = calls.findLast((call) => call.name === TODO_TOOL &&
-    call.state?.status === "completed" && call.state?.input?.workflow && call.state.input.todos)?.state.input.workflow
+  const declaration = calls.findLast((call) => call.name === TODO_TOOL &&
+    call.state?.status === "completed" && Array.isArray(call.state.input?.todos) && checklistWorkflow(call))
+  const declared = declaration && checklistWorkflow(declaration)
   const checklistMessage = checklist && recent.findIndex((message) => message.type === "assistant" && message.content?.includes(checklist))
   const routingEvidence = !declared && checklistMessage > 0 ? loadedSources(recent.slice(0, checklistMessage), sources) : seen
   const choices = [...routingEvidence].map((name) => sources.get(name)).filter((source) => source.steps.length)

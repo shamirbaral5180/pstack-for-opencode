@@ -88,6 +88,52 @@ export function workflowSources(root, skills) {
   return lookup
 }
 
+const workflowKey = (value) => typeof value === "string" ? portable(value.trim()).toLowerCase() : ""
+const workflowSlug = (key) => key.split("/").at(-1).replace(/^pstack-/, "").replace(/\.md$/, "")
+const workflowLabel = (source) => source.id ?? source.name
+
+function nameDistance(left, right) {
+  let row = Array.from({ length: right.length + 1 }, (_, i) => i)
+  for (let i = 0; i < left.length; i++) {
+    const next = [i + 1]
+    for (let j = 0; j < right.length; j++) {
+      next.push(Math.min(row[j + 1] + 1, next[j] + 1, row[j] + Number(left[i] !== right[j])))
+    }
+    row = next
+  }
+  return row.at(-1)
+}
+
+export function resolveWorkflow(value, sources, messages = []) {
+  const key = workflowKey(value)
+  const available = [...sources.values()]
+  const candidates = key ? available.filter((source) => {
+    const name = workflowKey(source.name)
+    if (key === name || key === workflowKey(source.id)) return true
+    const file = name.split("/").at(-1)
+    return source.playbook && (key === file || key === file.replace(/\.md$/, ""))
+  }) : []
+  if (candidates.length === 1) return { source: candidates[0] }
+  if (candidates.length > 1) {
+    return { error: `Ambiguous workflow ${JSON.stringify(value)}. Specify one explicitly: ${candidates.map(workflowLabel).join(", ")}.` }
+  }
+
+  const slug = workflowSlug(key)
+  const close = slug && slug.length <= 100 ? available.map((source) => {
+    const name = workflowSlug(workflowKey(source.name))
+    return { source, distance: nameDistance(slug, name) }
+  }).filter(({ distance }) => distance <= 2).sort((a, b) => a.distance - b.distance).map(({ source }) => source) : []
+  const seen = loadedSources(currentTurn(messages), sources)
+  const loaded = available.filter((source) => (source.playbook || source.steps.length) && seen.has(source.name))
+  const suggestions = [...new Set([...close, ...loaded])].slice(0, 3).map(workflowLabel)
+  const problem = key ? `Unknown workflow ${JSON.stringify(value)}.` : "Name the selected upstream workflow in `workflow`."
+  return { error: `${problem}${suggestions.length ? ` Possible sources: ${suggestions.join(", ")}.` : ""} Use the selected playbook filename or workflow skill ID; the plugin does not choose the route.` }
+}
+
+export function checklistWorkflow(call) {
+  return call.state.metadata?.pstackWorkflow ?? call.state.input?.workflow
+}
+
 export function currentTurn(messages) {
   const ordered = [...messages].sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
   return ordered.slice(Math.max(0, ordered.findLastIndex((message) => message.type === "user")))

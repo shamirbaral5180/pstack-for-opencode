@@ -1,5 +1,5 @@
 import { implementationIssue } from "./implementation.js"
-import { TODO_TOOL, workflowIssue } from "./workflow.js"
+import { resolveWorkflow, TODO_TOOL, workflowIssue } from "./workflow.js"
 
 export { TODO_TOOL } from "./workflow.js"
 
@@ -12,7 +12,7 @@ export function registerTodos(ctx, activeMode, sources) {
   return ctx.tool.transform((editor) => {
     editor.add({
       name: TODO_TOOL,
-      description: "Read or replace the pstack session's todo list. Omit todos to read it. Name the selected upstream workflow and keep original step IDs. Leave IDs off extra items. For a step requiring implementation delegation, save it in progress with paths set to the project-relative files to be implemented, and name those files in the worker's brief. Keep paths on updates. Advancing requires observed worker changes. Report blockers rather than closing unexecuted steps.",
+      description: "Read or replace the pstack session's todo list. Omit todos to read it. Name the loaded workflow (playbook stem, filename, or playbooks/<file>.md; for a skill use its name or ID). Keep original step IDs and leave IDs off extra items. For a step requiring implementation delegation, save it in progress with paths set to the project-relative files to be implemented, and name those files in the worker's brief. Keep paths on updates. Advancing requires observed worker changes. Report blockers rather than closing unexecuted steps.",
       options: { codemode: false },
       input: {
         type: "object",
@@ -53,26 +53,24 @@ export function registerTodos(ctx, activeMode, sources) {
         const list = result?.data ?? result
         const saved = list.find((entry) => entry.key === TODO_KEY)?.value ?? []
         if (todos === undefined) return { content: JSON.stringify(saved) }
-        workflow ??= saved.workflow
         let value = todos
-        if (mode === "pstack-poteto-mode" || workflow) {
-          const source = sources.get(workflow)
-          if (!source) {
-            const example = [...sources.keys()].find((name) => name.startsWith("playbooks/")) ?? "playbooks/feature.md"
-            const given = workflow === undefined ? "nothing" : JSON.stringify(workflow)
-            throw new Error(`The \`workflow\` field must name the selected source exactly (received ${given}). Use the source name you loaded, such as \`${example}\` or \`figure-it-out\`. The plugin does not choose the route.`)
-          }
+        if (mode === "pstack-poteto-mode" || workflow !== undefined || saved.workflow !== undefined) {
           const context = await ctx.session.context({ sessionID })
           const messages = context?.data ?? context
           if (!Array.isArray(messages) || messages.length === 0) throw new Error("OpenCode did not supply session evidence. Checklist update could not be validated.")
-          const check = workflowIssue(source, todos, messages, sources, workflow === saved.workflow ? saved.verified : undefined)
+          const persisted = workflow === undefined && sources.get(saved.workflow)
+          const { source, error } = persisted ? { source: persisted } : resolveWorkflow(workflow, sources, messages)
+          if (error) throw new Error(error)
+          const check = workflowIssue(source, todos, messages, sources, source.name === saved.workflow ? saved.verified : undefined)
           if (typeof check === "string") throw new Error(check)
           const handoff = await implementationIssue(ctx, { sessionID, source, todos, messages, sources })
           if (handoff) throw new Error(`pstack workflow checkpoint: ${handoff}`)
-          value = { workflow, todos, verified: check.verified }
+          value = { workflow: source.name, todos, verified: check.verified }
         }
         await entries.put({ sessionID, key: TODO_KEY, value })
-        return { content: `Saved ${todos.length} workflow todos for this session.` }
+        return value.workflow
+          ? { content: `Saved ${todos.length} workflow todos for ${value.workflow}.`, metadata: { pstackWorkflow: value.workflow } }
+          : { content: `Saved ${todos.length} workflow todos for this session.` }
       },
     })
   })

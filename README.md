@@ -154,6 +154,8 @@ The port adds three layers on top of the unchanged pstack content:
 
 The pstack workflow checklist is always the structured `pstack_todowrite` tool, stored in OpenCode's session instruction entries rather than a repository file or the native Desktop todo panel. Native `todowrite` is hidden for an active pstack session, because it cannot carry the `workflow`, step-ID, and implementation-`paths` fields that the prerequisite and handoff gates require.
 
+For `workflow`, `feature`, `feature.md`, and `playbooks/feature.md` all identify the same upstream playbook. Use the name or registered ID for a routed skill. The tool saves the canonical name only after validating the load and checklist. Unknown or ambiguous names return suggestions without selecting a different source.
+
 In Poteto Mode the checklist and a pre-tool checkpoint validate observable prerequisites against the selected playbook, without choosing a route or inferring conditional decisions:
 
 - **Unconditional skill prerequisites.** Steps that say to use, run, or apply a skill — for example Feature step 2's `architect`, Bug fix step 2's `why`, and the `sequence-verifiable-units` reference — must be loaded in full before the checklist advances past them. Conditional clauses (`if`, `when`, `unless`) are never promoted to requirements.

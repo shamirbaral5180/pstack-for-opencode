@@ -1,5 +1,5 @@
 import { implementationIssue } from "./implementation.js"
-import { deliveryReviewStep, reviewIssue } from "./review.js"
+import { deliveryIssue, deliveryReviewStep, LOCAL_REVIEW_STEP, reviewIssue, reviewPaths } from "./review.js"
 import { resolveWorkflow, savedChecklist, TODO_KEY, TODO_TOOL, workflowHistory, workflowIssue, workflowStart } from "./workflow.js"
 
 export { TODO_TOOL } from "./workflow.js"
@@ -26,7 +26,7 @@ export function registerTodos(ctx, activeMode, sources) {
               additionalProperties: false,
               required: ["content", "status"],
               properties: {
-                step: { type: "string", pattern: "^(start|[A-Z]|[0-9]+)$" },
+                step: { type: "string", pattern: "^(start|local-review|[A-Z]|[0-9]+|[a-z][a-z-]*:[A-Z])$" },
                 content: { type: "string", minLength: 1, maxLength: 250 },
                 status: { type: "string", enum: ["pending", "in_progress", "completed", "blocked"] },
                 paths: { type: "array", maxItems: 100, items: { type: "string", minLength: 1 } },
@@ -65,11 +65,28 @@ export function registerTodos(ctx, activeMode, sources) {
           const handoff = await implementationIssue(ctx, scope)
           if (handoff) throw new Error(`pstack workflow checkpoint: ${handoff}`)
           const delivery = deliveryReviewStep(source)
-          if (delivery && todos.some((item) => item.step === delivery.id && item.status === "completed")) {
-            const issue = await reviewIssue(ctx, scope)
+          const remote = delivery && todos.find(({ step }) => step === delivery.id)?.status
+          const local = todos.find(({ step }) => step === LOCAL_REVIEW_STEP)
+          const scoped = reviewPaths(source, todos).length > 0
+          const implemented = source.steps.filter(({ handoff }) => handoff)
+            .every(({ id }) => todos.some(({ step, status }) => step === id && status === "completed"))
+          const mustReview = remote === "completed" || remote === "blocked" && implemented && local?.status !== "blocked"
+          if (scoped && (mustReview || local?.status === "completed")) {
+            const parent = await ctx.session.get?.({ sessionID })
+            const issue = await reviewIssue(ctx, { ...scope, directory: (parent?.data ?? parent)?.location?.directory })
             if (issue) throw new Error(`pstack workflow checkpoint: ${issue}`)
           }
+          if (remote === "completed" && local?.status === "blocked") {
+            throw new Error("pstack workflow checkpoint: Local review is blocked; reopen it after resolving the blocker before completing PR delivery.")
+          }
+          const premature = deliveryIssue(source, todos, saved.workflow === source.name ? saved.todos : undefined, scope.messages)
+          if (premature) throw new Error(`pstack workflow checkpoint: ${premature}`)
           value = { workflow: source.name, todos, verified: check.verified, ...(Number.isFinite(startedAt) && { startedAt }) }
+          if (scoped && !local) {
+            value.todos = [...todos, { step: LOCAL_REVIEW_STEP, content: "Independent local review of the implementation", status: mustReview ? "completed" : "pending" }]
+          } else if (scoped && mustReview) {
+            value.todos = todos.map((item) => item === local ? { ...item, status: "completed" } : item)
+          }
         }
         await entries.put({ sessionID, key: TODO_KEY, value })
         return value.workflow
@@ -87,7 +104,12 @@ export function todoMapping(tools) {
   // handoff validation run identically on every host.
   if (tools?.todowrite) delete tools.todowrite
   if (tools?.[TODO_TOOL]) {
-    return `TaskCreate, TaskUpdate, TodoWrite, todowrite, and todolist refer to \`${TODO_TOOL}\` on this host. After loading your selected workflow, name it in \`workflow\` and set the checklist with \`todos\` before advancing. Use original step numbers or phase letters as \`step\` IDs; for a Start section use \`start\`. Keep those IDs in updates. For a playbook step that delegates implementation, save that step in progress with its concrete project-relative \`paths\` before handing it off; a child must actually change each scoped file before you close the step. If the tool reports missing evidence, complete the upstream prerequisite or report the blocker.`
+    return [
+      `Use \`${TODO_TOOL}\` for the upstream checklist. Name the loaded playbook or skill in \`workflow\` and keep original step IDs; use \`start\` for a Start section.`,
+      "Keep parent steps when tracking a nested workflow. Prefix nested phase IDs, for example `arena:B`, and wait for the fan-out phase checklist save to succeed before launching candidates.",
+      "Save each implementation handoff in progress with concrete relative `paths` before delegation. Only attributable worker changes with the required early principle reads count.",
+      "Complete `local-review` with a separate review of the implementation even if no remote is allowed. If review itself cannot run, record its own blocker. Mark PR delivery blocked, not completed, if no ready PR was opened.",
+    ].join(" ")
   }
   return "No todo tool is available for this request. If the selected workflow requires a todolist, report that step as blocked; do not claim it was created."
 }

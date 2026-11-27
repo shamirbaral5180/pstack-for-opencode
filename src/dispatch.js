@@ -1,6 +1,6 @@
 import { modelCatalog, parseRef } from "./models.js"
 import { availableRef, isModelAlias, parseSheet, ROLES } from "./sheet.js"
-import { savedChecklist } from "./workflow.js"
+import { loadedSources, savedChecklist, workflowHistory, workflowStart } from "./workflow.js"
 import { isWorkerTool } from "./worktree-worker.js"
 
 const data = (value) => value?.data ?? value
@@ -26,6 +26,18 @@ export function assignedRole(source, todo, agent) {
     if (role) roles.add(role.key)
   }
   return roles.size === 1 ? [...roles][0] : undefined
+}
+
+export function arenaPhase(source, todos, arena) {
+  if (!arena || !Array.isArray(todos)) return
+  const phase = arena.steps.find(({ title }) => /^Phase [A-Z]: Fan out$/i.test(title))
+  if (!phase) return
+  const nested = source !== arena
+  const prefix = `${arena.name}:`
+  const namespaced = nested && todos.some(({ step }) => step?.startsWith(prefix))
+  const stepId = (id) => namespaced ? `${prefix}${id}` : id
+  if (!arena.steps.every(({ id }) => todos.some(({ step }) => step === stepId(id)))) return
+  return todos.find(({ step }) => step === stepId(phase.id))?.status
 }
 
 const namedByUser = (messages, ref) => messages.some((message) =>
@@ -54,6 +66,25 @@ export async function roleAssignment(ctx, { sessionID, input, source, todos, she
   return { ...input, model: ref }
 }
 
+export async function arenaAssignment(ctx, input, sheet) {
+  const saved = parseSheet(sheet).roles["arena runners"]
+  if (!saved) return input
+  const seats = saved.split(",").map((ref) => ref.trim()).filter(Boolean)
+  const given = typeof input.model === "string" && input.model ? input.model : undefined
+  if (given === undefined || isModelAlias(given)) {
+    if (!seats.some(isModelAlias)) throw new Error("pstack Arena: choose an explicit model from arena runners for this candidate. Omission is only for an inherit-parent or auto seat.")
+    const { model: _model, ...rest } = input
+    return rest
+  }
+  const catalog = await modelCatalog(ctx)
+  if (!availableRef(given, catalog)) throw new Error(`pstack Arena: ${given} is not available. Choose a configured seat or follow Arena's fallback.`)
+  const available = catalog.find(({ ref }) => ref === key(given))
+  const fits = seats.some((seat) => given === seat || (!availableRef(seat, catalog) &&
+    (key(seat) === key(given) || catalog.find(({ ref }) => ref === key(seat))?.family === available.family)))
+  if (fits) return input
+  throw new Error(`pstack Arena: ${given} does not match a configured arena runners seat. Use the seat's listed model and variant; leave a blocked seat out only as the upstream skill directs.`)
+}
+
 export async function registerDispatch(ctx, { active, sources, skills, sheet }) {
   if (!ctx.tool?.hook) return
   const owned = new Set(skills.map(({ id }) => id))
@@ -72,7 +103,17 @@ export async function registerDispatch(ctx, { active, sources, skills, sheet }) 
     }
     if (!mode || agent?.startsWith("pstack:") || input.sessionID) return
     const saved = await savedChecklist(ctx, sessionID)
-    const source = sources.get(saved?.workflow)
+    const source = sources.get(saved?.workflow) ?? [...sources.values()].find(({ id }) => id === mode)
+    const arena = sources.get("arena")
+    const phase = ["general", "pstack:poteto-agent"].includes(input.agent) && arenaPhase(source, saved?.todos, arena)
+    if (phase === "in_progress") {
+      const messages = data(await ctx.session.context({ sessionID }))
+      const history = workflowHistory(messages ?? [], workflowStart(messages ?? [], source ?? arena, saved))
+      if (loadedSources(history, sources).has(arena.name)) {
+        event.input = await arenaAssignment(ctx, input, sheet())
+        return
+      }
+    }
     if (assignedRole(source, saved?.todos, input.agent)) {
       event.input = await roleAssignment(ctx, { sessionID, input, source, todos: saved?.todos, sheet: sheet() })
     }

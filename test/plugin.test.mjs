@@ -227,7 +227,8 @@ test("poteto-mode resolves sibling, playbook, reference, and worker paths absolu
 test("the action layer leaves routing and workflow rules to upstream", () => {
   const text = methodology("ROOT")
   assert.ok(text.includes("controlling engineering methodology"), "states precedence")
-  assert.match(text, /Playbooks section of `ROOT\/skills\/poteto-mode\/SKILL\.md` to select the route/)
+  assert.match(text, /scope of the whole task to the upstream Playbooks section/)
+  assert.match(text, /adapter never picks a route/)
   assert.doesNotMatch(text, /\bfeature\b|bug-fix|refactoring|figure-it-out/i, "does not enumerate routes")
   assert.match(text, /Read the selected playbook or routed workflow skill in full before following its steps/)
   assert.ok(text.includes("single source of truth"), "delegates authority to the playbook")

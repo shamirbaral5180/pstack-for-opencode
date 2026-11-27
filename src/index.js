@@ -7,12 +7,14 @@ import skills from "./data/skills.js"
 import { registerDispatch } from "./dispatch.js"
 import { MANDATE, mapping, methodology } from "./overlay.js"
 import { modelsPath } from "./paths.js"
+import { upstreamReview } from "./review.js"
 import { MODEL_PROPOSAL_TOOL, registerModelSetup, SETUP_SKILL } from "./setup.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
 import { hookEnabled, readSheet } from "./sheet.js"
 import { registerTodos, TODO_TOOL, todoMapping } from "./todos.js"
 import { ensureTranslated, translateText } from "./translate.js"
-import { TODO_KEY, workflowSources } from "./workflow.js"
+import { TODO_KEY, upstreamRouteRule, workflowSources } from "./workflow.js"
+import { worktreeReviewEvidence } from "./worktree-review.js"
 import { registerWorktreeWorker, WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
 const DENY = { action: "*", resource: "*", effect: "deny" }
@@ -102,13 +104,15 @@ export default {
 
     const translated = ensureTranslated()
     const MAPPING = mapping(translated.root, sheetPath)
-    const METHODOLOGY = methodology(translated.root)
+    const sources = workflowSources(translated.root, skills)
+    const METHODOLOGY = methodology(translated.root, upstreamRouteRule(sources))
     const allSkills = [...skills, { ...LOOP_SKILL, path: join(translated.root, LOOP_SKILL.source) }]
     const allCommands = [...commands, LOOP_COMMAND]
     const activeTodoMode = async (sessionID) => hookEnabled(readSheet(sheetPath)) ? getMode(sessionID) : undefined
-    const sources = workflowSources(translated.root, skills)
     await registerTodos(ctx, activeTodoMode, sources)
-    await registerWorktreeWorker(ctx, activeTodoMode)
+    const reviewer = upstreamReview(sources)?.agent
+    await registerWorktreeWorker(ctx, activeTodoMode, (agent, parent, checkout) =>
+      agent === reviewer ? worktreeReviewEvidence(parent, checkout) : undefined)
     await registerDispatch(ctx, { active: activeTodoMode, sources, skills: allSkills, sheet: () => readSheet(sheetPath) })
     const observeWorkspace = await registerCompliance(ctx, async (sessionID) => (await activeTodoMode(sessionID)) === POTETO, sources)
 

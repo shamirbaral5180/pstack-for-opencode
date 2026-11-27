@@ -17,10 +17,10 @@ const leaf = "principle-model-the-domain"
 
 const user = (created) => ({ type: "user", time: { created } })
 const load = (name, created) => ({ type: "skill", skill: `pstack-${name}`, time: { created } })
-const tool = (name, input, at, { status = "completed", metadata, files } = {}) => ({
+const tool = (name, input, at, { status = "completed", metadata, files, start = "before", end = "after" } = {}) => ({
   type: "assistant", time: { created: at - 1, completed: at + 2 },
   content: [{ type: "tool", id: `call-${name}-${at}`, name, time: { ran: at, completed: at + 1 }, state: { status, input, metadata } }],
-  ...(files && { snapshot: { start: "before", end: "after", files } }),
+  ...(files && { snapshot: { start, end, files } }),
 })
 const readFeature = () => {
   const msg = tool("read", { path: feature.path }, 4, { metadata: { truncated: false } })
@@ -91,7 +91,10 @@ test("the fallback refuses to open a scoped handoff on a claimed, not observed, 
   assert.deepEqual(f.state, [])
   f.messages.push(load(leaf, 10))
   await f.save(sheet("in_progress"), 13)
-  assert.deepEqual(f.state[0].value.todos, sheet("in_progress").todos)
+  const saved = f.state[0].value.todos
+  assert.deepEqual(saved.slice(0, -1), sheet("in_progress").todos)
+  assert.equal(saved.at(-1).step, "local-review")
+  assert.equal(saved.at(-1).status, "pending")
 })
 
 test("writes to open implementation paths and closing the step both need real child changes", async () => {
@@ -233,7 +236,7 @@ test("native edit diff is stronger than a shared snapshot; patchText includes re
     tool("edit", { path: file }, 23, { metadata: { files: [{ file, additions: 1, deletions: 1 }] } }),
     tool("edit", { path: tests }, 24, { metadata: { files: [] }, files: [tests] }),
     tool("shell", { command: "git diff" }, 25, { files: [file, tests] }),
-  ], directory), [{ path: file, at: 23 }])
+  ], directory).map(({ path, at }) => ({ path, at })), [{ path: file, at: 23 }])
 })
 
 test("worker principle verification: the required leaf must be loaded by the worker, not just the main agent", async () => {
@@ -293,4 +296,62 @@ test("a read completed after the first scoped edit does not validate it, even ac
   await assert.rejects(f.save(sheet("completed"), 40), /loaded principle-model-the-domain too late/)
   await assert.rejects(f.before("edit", { path: file }), /loaded principle-model-the-domain too late/)
   assert.equal(f.state[0].value.todos.find((todo) => todo.step === "4").status, "in_progress")
+})
+
+async function lateHandoff(meta) {
+  const f = await fixture()
+  await f.save(sheet("in_progress", [file, tests]), 14)
+  const brief = `Implement ${file} and ${tests}.`
+  f.messages.push(spawn("original", brief))
+  f.worker("original", [
+    tool("write", { path: file }, 23, { files: [file], start: "baseline", end: "partial" }),
+    tool("write", { path: tests }, 27, { files: [tests], start: "partial", end: "original" }),
+    load(leaf, 30),
+  ], meta)
+  const close = (at) => f.save(sheet("completed", [file, tests]), at)
+  await assert.rejects(close(32), /loaded principle-model-the-domain too late/)
+  const rollback = (end, files) => tool("shell", { command: "restore previous contents" }, 35,
+    { files, start: "original", end })
+  const replace = () => {
+    f.messages.push(spawn("replacement", brief, 40))
+    f.worker("replacement", [load(leaf, 44), write(file, 46), write(tests, 48)])
+  }
+  return { ...f, close, rollback, replace }
+}
+
+test("a verified rollback retires the discarded attempt; a fresh handoff and independent review are still required", async () => {
+  const f = await lateHandoff()
+  f.messages.push(f.rollback("baseline", [file, tests]))
+  await assert.rejects(f.close(39), /no attributable worker change/)
+  f.replace()
+  await f.close(52)
+  const reviewed = sheet("completed", [file, tests])
+  reviewed.todos.push({ step: "local-review", status: "completed", content: "Independent review" })
+  await assert.rejects(f.save(reviewed, 54), /no-comments/)
+  f.messages.push(load("no-comments", 55))
+  await assert.rejects(f.save(reviewed, 59), /No completed, linked review/)
+})
+
+test("a partial rollback or a parent rollback in a different checkout does not retire late writes", async () => {
+  const partial = await lateHandoff()
+  partial.messages.push(partial.rollback("partial", [tests]))
+  partial.replace()
+  await assert.rejects(partial.close(52), /loaded principle-model-the-domain too late/)
+
+  const otherCheckout = await lateHandoff({ location: { directory: resolve("separate-worktree") } })
+  otherCheckout.messages.push(otherCheckout.rollback("baseline", [file, tests]))
+  otherCheckout.replace()
+  await assert.rejects(otherCheckout.close(52), /loaded principle-model-the-domain too late/)
+})
+
+test("editing again in the original worker does not launder its late read after rollback", async () => {
+  const f = await lateHandoff()
+  f.messages.push(f.rollback("baseline", [file, tests]))
+  f.worker("original", [
+    tool("write", { path: file }, 23, { files: [file], start: "baseline", end: "partial" }),
+    tool("write", { path: tests }, 27, { files: [tests], start: "partial", end: "original" }),
+    load(leaf, 30), write(file, 39),
+  ])
+  f.replace()
+  await assert.rejects(f.close(52), /loaded principle-model-the-domain too late/)
 })

@@ -20,6 +20,7 @@ Subagents: call \`subagent\` with \`agent\`, \`description\`, \`prompt\`, and op
 - \`cloud_base_branch\` is the worktree base.
 - Ordinary delegation without a worktree still uses native \`subagent\`.
 - For a scoped code handoff or Comment Sicko review, omit \`model\` to use that role's saved choice. Do not confuse the judgment role with the implementation role. Pass other workflow assignments as \`model: "provider/model#variant"\` (leave off \`#variant\` for a base ref). A different model explicitly named by the user takes precedence. For \`inherit-parent\` or \`auto\`, omit \`model\` and keep the workflow's agent and permissions. Keep panel order and alias seats; never use an alias as Arena's cross-judge. Report any assignment that is blocked; do not rewrite the sheet.
+- During Arena fan-out, pass each candidate's exact \`arena runners\` seat, not the enclosing playbook's model. Omit the model only for an alias seat. The selected workflow still controls the number of candidates and the cross-judge.
 
 Skills: pass the registered ID or exact skill name to \`skill\`; use \`skill\` for a named skill rather than guessing a playbook filename. A slash command such as \`/poteto-mode\` already attaches its skill to the message. Skill files live under \`${skills}/skills\`.
 
@@ -45,12 +46,14 @@ export const MANDATE = `<pstack_routing>
 pstack is installed. Invoke the \`pstack-poteto-mode\` skill and follow it when a task touches more than one file, changes a signature other files call, involves a design or architecture choice, or is a bug whose cause is not known or a performance issue. For a specific intent, load that skill directly, such as \`pstack-tdd\`, \`pstack-architect\`, \`pstack-how\`, \`pstack-why\`, \`pstack-arena\`, or \`pstack-interrogate\`. For a contained change to one file with an obvious test, a question, or a one-line edit, work directly and verify on the real artifact. The user's entry point is the \`/poteto-mode\` command. User instructions take precedence.
 </pstack_routing>`
 
-export function methodology(root) {
+export function methodology(root, routeRule = "") {
   return `<pstack_poteto_mode>
 Poteto Mode is the controlling engineering methodology for this session. OpenCode's environment, tools, permissions, and security rules still apply unchanged.
 The user can end it with \`/poteto-mode-exit\`.
 
-Before implementation, use the Playbooks section of \`${portable(root)}/skills/poteto-mode/SKILL.md\` to select the route for the whole task, not just its first symptom. Use the attached skill or read the file if the attachment is no longer in context. That skill owns routing, non-negotiables, principles, and subagent rules.
+Before saving the first checklist, compare the scope of the whole task to the upstream Playbooks section, not just the first symptom. State why one playbook covers the whole request, or use the upstream fallback when none does. If discovery disproves the initial fit, load and record the new route before continuing. The adapter never picks a route.
+${routeRule ? `Upstream routing rule: ${routeRule}\n` : ""}
+Use the attached \`${portable(root)}/skills/poteto-mode/SKILL.md\` or read it if the attachment is no longer in context. That skill owns routing, non-negotiables, principles, and subagent rules.
 
 Read the selected playbook or routed workflow skill in full before following its steps. It is the single source of truth for the task's steps, including any conditions or exceptions. If you cannot load it, stop and report the failure instead of proceeding without it.
 </pstack_poteto_mode>`

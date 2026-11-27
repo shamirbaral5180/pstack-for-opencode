@@ -22,7 +22,7 @@ const modelRef = (model) => {
   return { providerID, id, ...(variant && { variant }) }
 }
 
-export function registerWorktreeWorker(ctx, isActive) {
+export function registerWorktreeWorker(ctx, isActive, reviewEvidence) {
   const { session } = ctx
   if (!ctx.tool?.transform || !ctx.worktree?.list || !ctx.agent?.get || !ctx.permission?.assert ||
     ![session.create, session.move, session.wait, session.get, session.prompt].every((method) => typeof method === "function")) return
@@ -92,6 +92,7 @@ export function registerWorktreeWorker(ctx, isActive) {
         throw new Error(`Could not place the worker in ${checkout}. No prompt was sent; do not start it in the parent checkout.${detail ? ` ${detail}` : ""}`, { cause })
       }
 
+      const review = await reviewEvidence?.(agent, parent.location.directory, checkout)
       try {
         await session.prompt({ sessionID: child.id, text: prompt }, options)
       } catch (cause) {
@@ -99,7 +100,7 @@ export function registerWorktreeWorker(ctx, isActive) {
       }
       return {
         content: `Worker started in ${checkout} (sessionID: ${child.id}). OpenCode will deliver its background result to this session.`,
-        metadata: { sessionID: child.id, directory: checkout },
+        metadata: { sessionID: child.id, directory: checkout, ...(review && { pstackWorktreeReview: review }) },
       }
     },
   }))

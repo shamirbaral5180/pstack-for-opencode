@@ -1,4 +1,5 @@
 import { implementationIssue, isMutation, mutationTargets, workspaceNotice } from "./implementation.js"
+import { reviewIssue } from "./review.js"
 import { checklistWorkflow, currentTurn, loadedSources, missingLoad, pastStep, savedChecklist, TODO_TOOL, toolCalls, workflowHistory, workflowStart } from "./workflow.js"
 import { WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
@@ -125,10 +126,15 @@ export async function registerCompliance(ctx, isActive, sources) {
       const session = response?.data ?? response
       if (session?.parentID) return
       const targets = delivery ? undefined : mutationTargets(tool, input, session?.location?.directory ?? ctx.location?.directory)
-      const issue = await implementationIssue(ctx, {
+      const scope = {
         sessionID, session, source: result.route, todos: result.todos, messages: result.history, sources, targets, delivery, native: result.native,
-      })
+      }
+      const issue = await implementationIssue(ctx, scope)
       if (issue) throw new Error(`pstack workflow checkpoint: ${issue}`)
+      if (delivery) {
+        const review = await reviewIssue(ctx, { ...scope, directory: session?.location?.directory })
+        if (review) throw new Error(`pstack workflow checkpoint: ${review}`)
+      }
     })
   }
 

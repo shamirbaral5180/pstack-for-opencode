@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join, dirname, relative } from "node:path"
-import { portable, vendorRoot } from "./paths.js"
+import { absolutePathKey, portable, vendorRoot } from "./paths.js"
 
 export const TODO_TOOL = "pstack_todowrite"
 export const TODO_KEY = "pstack-workflow-todos"
@@ -93,6 +93,12 @@ const workflowKey = (value) => typeof value === "string" ? portable(value.trim()
 const workflowSlug = (key) => key.split("/").at(-1).replace(/^pstack-/, "").replace(/\.md$/, "")
 const workflowLabel = (source) => source.id ?? source.name
 
+export function upstreamRouteRule(sources) {
+  const mode = sources.get("poteto-mode")
+  const routing = mode?.text.split(/^## Playbooks\s*$/m)[1]?.split(/^## /m)[0]
+  return routing?.match(/^Match the task to a playbook[^\r\n]+/m)?.[0]
+}
+
 function nameDistance(left, right) {
   let row = Array.from({ length: right.length + 1 }, (_, i) => i)
   for (let i = 0; i < left.length; i++) {
@@ -174,7 +180,8 @@ export function workflowHistory(messages, startedAt) {
 }
 
 export function loadedSources(messages, sources, before = Infinity) {
-  const paths = new Map([...sources.values()].map((item) => [item.path, item]))
+  const paths = new Map([...sources.values()].filter((item) => absolutePathKey(item.path))
+    .map((item) => [absolutePathKey(item.path), item]))
   const byId = new Map([...sources.values()].filter((item) => item.id).map((item) => [item.id, item]))
   const evidence = new Set()
   for (const message of messages) {
@@ -186,11 +193,13 @@ export function loadedSources(messages, sources, before = Infinity) {
       if (before !== Infinity && !((call.time?.completed ?? message.time?.completed) < before)) continue
       const input = call.state.input
       if (call.name === "read" && typeof input?.path === "string") {
-        const item = paths.get(portable(input.path))
         const result = call.state.content?.find((part) => part.type === "text")?.text ?? ""
-        const range = /^Read file [^\r\n]+, lines 1-(\d+)(?:\r?\n|$)/.exec(result)
-        if (item && (input.offset ?? 1) === 1 && (input.limit ?? Infinity) >= item.lineCount &&
-          Number(range?.[1]) >= item.lineCount && call.state.metadata?.truncated === false) {
+        const range = /^Read file ([^\r\n]+), lines 1-(\d+)(?:\r?\n|$)/.exec(result)
+        const key = absolutePathKey(input.path)
+        const item = paths.get(key)
+        if (item && key === absolutePathKey(range?.[1]) && (input.offset ?? 1) === 1 &&
+          (input.limit ?? Infinity) >= item.lineCount && Number(range?.[2]) >= item.lineCount &&
+          call.state.metadata?.truncated === false) {
           evidence.add(item.name)
         }
       } else if (call.name === "skill") {

@@ -41,7 +41,7 @@ export const datedCalls = (messages) => messages.flatMap((message) => toolCalls(
 })))
 
 export function workerChanges(messages, directory) {
-  return datedCalls(messages).flatMap(({ call, message, at }) => {
+  return datedCalls(messages).flatMap(({ call, message, at, completed }) => {
     if (call.state?.status !== "completed" || !isMutation(call.name) || !Number.isFinite(at)) return []
     const files = call.state.metadata?.files
     // Edit/patch results can carry their own diff. A plain write needs
@@ -51,7 +51,8 @@ export function workerChanges(messages, directory) {
         .map((file) => relativeFile(file.file, directory)))
       : snapshotFiles(message)
     return mutationTargets(call.name, call.state.input, directory)
-      .filter((path) => changes.has(path)).map((path) => ({ path, at }))
+      .filter((path) => changes.has(path))
+      .map((path) => ({ path, at, completed: message.time?.completed ?? completed, snapshot: message.snapshot }))
   })
 }
 
@@ -87,7 +88,32 @@ function mentionsFile(brief, path, directory) {
   })
 }
 
-async function attributableChanges(ctx, session, messages, declared, sources) {
+function retainedWorkers(children, messages, directory) {
+  const local = children.filter((child) => sameDirectory(child.directory, directory))
+  const changes = local.flatMap((child) => child.changes).sort((a, b) => a.at - b.at)
+  let restoredAt = -Infinity
+  for (const message of messages) {
+    const files = snapshotFiles(message)
+    const at = message.time?.created
+    const done = message.time?.completed
+    if (!files.size || !(done > at) || at < restoredAt || !toolCalls([message]).some((call) =>
+      call.state.status === "completed" && (call.name === "shell" || isMutation(call.name)))) continue
+
+    // Use the host's same-checkout snapshots, not a command string or a
+    // claim of reversion. An exact rollback must bracket every scoped edit.
+    const prior = changes.filter((change) => change.at >= restoredAt && change.at < done)
+    if (!prior.length || !prior.every((change) => change.completed < at && files.has(change.path))) continue
+    const last = prior.reduce((a, b) => a.completed >= b.completed ? a : b)
+    if (message.snapshot.end === prior[0].snapshot?.start && message.snapshot.start === last.snapshot?.end) {
+      restoredAt = done
+    }
+  }
+  return children.map((child) => local.includes(child)
+    ? { ...child, changes: child.changes.filter((change) => change.at >= restoredAt) }
+    : child)
+}
+
+async function attributableChanges(ctx, session, messages, declared) {
   const assignments = new Map()
   for (const { call, at } of datedCalls(messages)) {
     const id = call.state?.metadata?.sessionID
@@ -115,15 +141,18 @@ async function attributableChanges(ctx, session, messages, declared, sources) {
         mentionsFile(brief.brief, path, dir)))
       const report = history.filter((message) => message.type === "assistant")
         .flatMap((message) => (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text)).join("\n")
-      return { changes, history, report, brief: briefs.map((brief) => brief.brief).join("\n") }
+      const firstChangeAt = Math.min(...changes.map(({ at }) => at))
+      return { changes, firstChangeAt, history, report, directory: dir, brief: briefs.map((brief) => brief.brief).join("\n") }
     } catch {
       return
     }
   }))
-  const children = receipts.filter(Boolean)
+  const unavailable = receipts.includes(undefined)
+  const observed = receipts.filter(Boolean)
+  const children = unavailable ? observed : retainedWorkers(observed, messages, session.location?.directory)
   return {
     paths: new Set(children.flatMap((child) => child.changes.map(({ path }) => path))),
-    unavailable: receipts.includes(undefined),
+    unavailable,
     children,
   }
 }
@@ -155,16 +184,18 @@ function workerPrincipleIssue(source, step, receipts, sources) {
   // reviewer or other non-implementer child is not required to load anything.
   for (const child of receipts.children.filter((entry) => entry.changes.length)) {
     const loaded = loadedSources(child.history, sources)
-    const beforeImplementation = loadedSources(child.history, sources, Math.min(...child.changes.map(({ at }) => at)))
+    // A resumed worker keeps its original chronology even after its work was discarded.
+    const beforeImplementation = loadedSources(child.history, sources, child.firstChangeAt)
     const required = new Set(step.handoff ?? [])
     for (const id of referencedPrinciples(child.brief, principles)) required.add(id)
     for (const id of required) {
       const principle = principles.find((entry) => entry.id === id)
       if (!principle || beforeImplementation.has(principle.name)) continue
+      const retry = " To retry, restore the checkout to its pre-attempt contents without discarding unrelated work, then delegate to a fresh worker with the required leaf read first."
       if (loaded.has(principle.name)) {
-        return `Step ${step.id} of ${source.path}: the assigned worker loaded ${principle.name} too late. The leaf must be read before its first attributable implementation change; a later read cannot validate that change.`
+        return `Step ${step.id} of ${source.path}: the assigned worker loaded ${principle.name} too late. The leaf must be read before its first attributable implementation change; a later read cannot validate that change.${retry}`
       }
-      return `Step ${step.id} of ${source.path}: the assigned worker did not load the required ${principle.name}. Load ${principle.path} in the worker before it implements; a main-session read does not satisfy the worker's principle load.`
+      return `Step ${step.id} of ${source.path}: the assigned worker did not load the required ${principle.name}. Load ${principle.path} in the worker before it implements; a main-session read does not satisfy the worker's principle load.${retry}`
     }
     for (const id of referencedPrinciples(child.report, principles)) {
       const principle = principles.find((entry) => entry.id === id)

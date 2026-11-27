@@ -1,6 +1,6 @@
 {
   "name": "pstack-for-opencode",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Lauren Tan's pstack, packaged as a native OpenCode plugin",
   "type": "module",
   "main": "index.js",
@@ -24,6 +24,7 @@
     "references",
     "docs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

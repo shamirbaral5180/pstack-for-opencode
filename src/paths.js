@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 
 // src/index.js -> package root
@@ -12,3 +12,10 @@ export const modelsPath = join(
 )
 
 export const portable = (path) => path.replaceAll("\\", "/")
+
+const nativePath = (path) => process.platform === "win32" ? portable(path) : path
+export function absolutePathKey(path) {
+  if (typeof path !== "string" || path.includes("\0") || !isAbsolute(nativePath(path))) return
+  const key = normalize(nativePath(path))
+  return process.platform === "win32" ? portable(key).toLowerCase() : key
+}

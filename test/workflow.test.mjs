@@ -3,7 +3,7 @@ import test from "node:test"
 import { actionFor, inspectAction, observedActions, registerCompliance } from "../src/compliance.js"
 import skills from "../src/data/skills.js"
 import { ensureTranslated } from "../src/translate.js"
-import { loadedSources, resolveWorkflow, TODO_TOOL, workflowIssue, workflowRequirements, workflowSources, workflowStart } from "../src/workflow.js"
+import { loadedSources, resolveWorkflow, TODO_TOOL, upstreamRouteRule, workflowIssue, workflowRequirements, workflowSources, workflowStart } from "../src/workflow.js"
 
 const sources = workflowSources(ensureTranslated().root, skills)
 const feature = sources.get("playbooks/feature.md")
@@ -26,6 +26,15 @@ const read = (name, { truncated = false, offset = 1, status = "completed" } = {}
     }],
   }
 }
+
+test("a multi-part task can declare upstream figure-it-out without inheriting an incidental bug-fix read", () => {
+  const input = { type: "user", time: { created: 1 }, text: "Prepare the release: fix three independent defects and update tests and documentation." }
+  const history = [input, read("playbooks/bug-fix.md"), skill(figure.name, 3)]
+  assert.match(upstreamRouteRule(sources), /cross-cutting.*figure-it-out/)
+  assert.equal(resolveWorkflow(figure.id, sources, history).source, figure)
+  assert.match(resolveWorkflow(undefined, sources, history).error, /Name the selected upstream workflow/)
+  assert.equal(typeof workflowIssue(figure, checklist(figure), history, sources), "object")
+})
 
 test("skipping an unconditional upstream skill blocks checklist advancement, then a real load clears it", () => {
   const seen = [read(feature.name)]

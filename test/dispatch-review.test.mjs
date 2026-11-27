@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { dirname, resolve } from "node:path"
-import { assignedRole, roleAssignment, skillId } from "../src/dispatch.js"
+import { arenaAssignment, arenaPhase, assignedRole, registerDispatch, roleAssignment, skillId } from "../src/dispatch.js"
 import skills from "../src/data/skills.js"
-import { reviewIssue } from "../src/review.js"
+import { deliveryIssue, reviewIssue } from "../src/review.js"
 import { ensureTranslated } from "../src/translate.js"
 import { loadedSources, workflowSources } from "../src/workflow.js"
 
@@ -39,6 +39,22 @@ test("the native tool's original alias counts only when its receipt resolves to 
   assert.ok(!loadedSources(history, sources).has(skill.name))
 })
 
+test("full reads of registered sources count through equivalent dot-segment paths without relaxing chronology", () => {
+  const leaf = sources.get("principle-foundational-thinking")
+  const path = leaf.path.replace("/principle-foundational-thinking/", "/poteto-mode/../principle-foundational-thinking/")
+  const state = { status: "completed", input: { path }, metadata: { truncated: false }, content: [
+    { type: "text", text: `Read file ${path}, lines 1-${leaf.lineCount}\n...` },
+  ] }
+  const history = [{ type: "assistant", content: [{ type: "tool", name: "read", state, time: { completed: 10 } }] }]
+  assert.ok(loadedSources(history, sources, 11).has(leaf.name))
+  assert.ok(!loadedSources(history, sources, 10).has(leaf.name))
+  state.input.offset = 2
+  assert.ok(!loadedSources(history, sources).has(leaf.name))
+  state.input.offset = 1
+  state.content[0].text = `Read file ${dirname(path)}/other.md, lines 1-${leaf.lineCount}\n...`
+  assert.ok(!loadedSources(history, sources).has(leaf.name))
+})
+
 test("scoped roles come from selected handoff clauses, not from agent-wide code defaults", async () => {
   const ctx = { model: { list: async () => catalog }, session: { context: async () => [] } }
   assert.equal(assignedRole(source, [], worker.agent), undefined)
@@ -53,6 +69,52 @@ test("scoped roles come from selected handoff clauses, not from agent-wide code 
     assert.deepEqual(await roleAssignment(ctx, cfg({ ...worker, model: alias }, `feature, refactoring: ${alias}`)), worker)
   }
   await assert.rejects(roleAssignment(ctx, cfg(reviewer, "judgment and prose: unavailable/judge")), /No worker was started/)
+})
+
+test("a loaded Arena fan-out uses the panel instead of the enclosing code role", async () => {
+  const arena = sources.get("arena")
+  const phases = arena.steps.map(({ id }) => ({ step: `arena:${id}`, status: id === "B" ? "in_progress" : "pending" }))
+  const saved = { workflow: source.name, todos: [...todos, ...phases], startedAt: 1 }
+  const messages = [{ type: "skill", skill: arena.id, time: { created: 2 } }]
+  let dispatch
+  const ctx = {
+    tool: { hook: async (_name, fn) => { dispatch = fn } },
+    model: { list: async () => catalog },
+    session: { instructions: { entry: { list: async () => [{ key: "pstack-workflow-todos", value: saved }] } }, context: async () => messages },
+  }
+  const panel = `${sheet}arena runners: code/main#high, review/judge#low, auto\n`
+  await registerDispatch(ctx, { active: async () => "pstack-poteto-mode", sources, skills, sheet: () => panel })
+  assert.equal(arenaPhase(source, saved.todos, arena), "in_progress")
+  const candidate = { tool: "pstack_worktree_worker", sessionID: "main", agent: "build", input: { ...worker, model: "review/judge#low" } }
+  await dispatch(candidate)
+  assert.equal(candidate.input.model, "review/judge#low")
+  for (const alias of [undefined, "inherit-parent", "auto"]) {
+    assert.deepEqual(await arenaAssignment(ctx, { ...worker, model: alias }, panel), worker)
+  }
+  await assert.rejects(arenaAssignment(ctx, worker, `${sheet}arena runners: code/main#high`), /explicit model/)
+  assert.equal((await arenaAssignment(ctx, { ...worker, model: "code/main#low" }, "arena runners: code/main#retired")).model, "code/main#low")
+  messages.length = 0
+  await assert.rejects(dispatch(candidate), /selected feature/)
+  messages.push({ type: "skill", skill: arena.id, time: { created: 2 } })
+  phases.find(({ step }) => step === "arena:B").status = "completed"
+  await assert.rejects(dispatch(candidate), /selected feature/)
+})
+
+test("blocked delivery and a local report cannot stand in for a successful ready PR", () => {
+  const entries = source.steps.map(({ id }) => ({ step: id, status: "completed" }))
+  const blocked = entries.map((item) => item.step === "8" ? { ...item, status: "blocked" } : item)
+  const ready = [{ type: "assistant", content: [{ type: "tool", name: "shell", state: {
+    status: "completed", input: { command: "gh pr create --title 'Ready'" }, metadata: { exit: 0 },
+    content: [{ type: "text", text: "https://github.example/team/repo/pull/42" }],
+  } }] }]
+  assert.equal(deliveryIssue(source, blocked, entries, []), undefined)
+  assert.match(deliveryIssue(source, entries, blocked, ready), /Reopen it/)
+  assert.match(deliveryIssue(source, entries, entries, []), /no successful ready PR/)
+  const pending = entries.map((item) => item.step === "5" ? { ...item, status: "pending" } : item)
+  assert.match(deliveryIssue(source, pending, entries, ready), /finish upstream steps 5/)
+  assert.equal(deliveryIssue(source, entries, entries, ready), undefined)
+  ready[0].content[0].state.input.command += " --draft"
+  assert.match(deliveryIssue(source, entries, entries, ready), /no successful ready PR/)
 })
 
 test("delivery distinguishes a loaded review, a launch, and an observed independent review", async () => {

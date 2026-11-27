@@ -33,6 +33,8 @@ pstack is a collection of skills, playbooks, principles, and subagents that make
 
 The original content is vendored unchanged and verified against a pinned manifest. See [docs/parity.md](docs/parity.md) for the exact substitution list and the measured record.
 
+**Beta.3 status:** The candidate passed a clean OpenCode 2.4.1 installation from a private test registry and the installed adapter regressions. The final six-case Gate 4 matrix did not pass. Beta.3 is not published to npm. See the [changelog](CHANGELOG.md#010-beta3) for the results.
+
 ---
 
 ## Quick start
@@ -40,7 +42,7 @@ The original content is vendored unchanged and verified against a pinned manifes
 Once the beta is published, install it with one command:
 
 ```sh
-opencode plugin add pstack-for-opencode@0.1.0-beta.2
+opencode plugin add pstack-for-opencode@0.1.0-beta.3
 ```
 
 In OpenCode, run `/setup-pstack`, then `/poteto-mode <your task>`. Leave the mode with `/poteto-mode-exit`.
@@ -153,7 +155,7 @@ For a workflow that assigns workers separate checkouts, create or select a regis
 | **Principles** | 24, loaded through `/poteto-mode` | Same 24, translated |
 | **Agents** | `poteto-agent`, `comment-sicko`, Task/Agent subagents | 3 subagents (`poteto-agent`, `readonly`, `comment-sicko`) |
 | **Model routing** | Per-role rules read by each skill | Per-role sheet and native model assignment at delegation |
-| **Verification** | `control-ui` / `control-cli` (in `cursor-team-kit`) | Same skills translated; project verification skills |
+| **Verification** | `control-ui` / `control-cli` (in `cursor-team-kit`) | Project-provided checks on the actual UI or CLI; the Cursor drivers are not bundled |
 | **Arena** | Multi-model panel, worktree isolation | Same, with vendor-level model families |
 | **Interrogate** | Adversarial reviewers | Same, fan-out over the reviewers line |
 | **Eval** | Blinded experiments | Same playbook, translated |
@@ -177,9 +179,11 @@ For a workflow that assigns workers separate checkouts, create or select a regis
 - The read-only boundary (reviewers cannot write or run shell).
 - The structured workflow checklist and its gates in natural execution: two independent DeepSeek V4.1 Flash feature runs with native `todowrite` enabled both kept the structured checklist, carried step IDs and implementation paths, made zero main-session writes, delegated to a worker on the sheet model, and passed the product check. A third baseline run showed the same under the fallback alone.
 
-**Known limitations (not defects in the port):**
+**Known limitations:**
 
-- **The checkpoint is evidence, not a security boundary.** It cannot attribute arbitrary shell/`execute`/Code-Mode writes to a writer (it reports them as observations), prove a loaded skill was *applied* (only *loaded*), or stop a model that never saves a checklist or never declares scope (the route is then ambiguous and writes pass). Independent review remains agent discretion.
+- **Workflow fidelity depends on the model.** The coordinator selects the workflow. The adapter validates observable steps but does not override the choice or guarantee timely completion. Both final cross-cutting runs chose Bug Fix instead of `figure-it-out`; one coupled-feature run skipped Arena despite identifying alternatives.
+- **The checkpoint is evidence, not a security boundary.** It cannot attribute arbitrary shell or Code Mode writes, prove a loaded skill was applied, or enforce a handoff when there is no usable checklist or scope. A scoped local review needs independent evidence. A review transferred from a Git worktree needs a full read of every changed file and matching final paths, modes, and bytes; unsupported diffs or changes after review need a fresh review in the final checkout.
+- **`/deslop`, `control-ui`, and `control-cli` are not bundled.** Use a project-provided equivalent where available or report the step blocked. The upstream guide allows requesting the same focused pre-commit cleanup in plain words when `/deslop` is missing. That cleanup does not replace independent review. See [the proposed native equivalent](docs/parity.md#proposed-opencode-native-deslop).
 - **CI babysitting is unverified.** The `babysit` playbook depends on a live CI pipeline (GitHub Actions) and the `watch-pr` watcher, which requires [bun](https://bun.sh). Neither a real failing CI run nor the watcher was exercised end to end here, so babysitting is documented rather than claimed.
 - `worktree-cleanup` reclaimers (`xcrun simctl`, `df -h`) are macOS/Linux-only.
 - The `statechart` skill needs `mise` + TLC + Java on first run.

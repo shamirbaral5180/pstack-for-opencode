@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs"
+import { parseRef } from "./models.js"
 import { modelsPath } from "./paths.js"
 
 export const ROLES = [
@@ -20,22 +21,23 @@ const BUDGETS = {
 }
 
 const LADDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-const ALIASES = new Set(["inherit-parent", "auto"])
+export const isModelAlias = (value) => value === "inherit-parent" || value === "auto"
+const roleLine = /^([a-z][a-z, -]+):[ \t]*(.*)$/
+const budgetLine = /^#\s*budget:\s*(\S+)/i
 
 export function parseSheet(text) {
-  const sheet = { budget: "large", hook: true, roles: {}, generated: false }
+  const sheet = { budget: "large", hook: true, roles: {} }
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim()
     if (!trimmed) continue
     if (/^session hook:\s*off$/i.test(trimmed.replace(/^#\s*/, ""))) sheet.hook = false
-    if (/Generated from the models configured/i.test(trimmed)) sheet.generated = true
-    const budget = /^#\s*budget:\s*([a-z]+)/i.exec(trimmed)
+    const budget = budgetLine.exec(trimmed)
     if (budget) sheet.budget = budget[1].toLowerCase()
     if (trimmed.startsWith("#")) continue
-    const pair = /^([a-z][a-z, -]+):\s*(.+)$/.exec(trimmed)
+    const pair = roleLine.exec(trimmed)
     if (pair) sheet.roles[pair[1].trim()] = pair[2].trim()
   }
-  if (!BUDGETS[sheet.budget]) sheet.budget = "large"
+  if (!Object.hasOwn(BUDGETS, sheet.budget)) sheet.budget = "large"
   return sheet
 }
 
@@ -81,71 +83,75 @@ function chooseVariant(entry, target) {
   return undefined
 }
 
-function normalizeRefValue(value, catalog, target) {
-  const slash = value.indexOf("/")
-  if (slash <= 0) return undefined
-  const hash = value.indexOf("#", slash + 1)
-  const base = hash === -1 ? value : value.slice(0, hash)
-  const explicit = hash === -1 ? undefined : value.slice(hash + 1)
-  const entry = catalog.find((item) => item.ref === base)
-  if (!entry) return undefined
-  const variant = explicit && entry.variants.includes(explicit) ? explicit : chooseVariant(entry, target)
-  return variant ? `${base}#${variant}` : base
+export function availableRef(value, catalog) {
+  const model = parseRef(value)
+  return !!model && catalog.some((entry) =>
+    entry.ref === `${model.providerID}/${model.id}` && (!model.variant || entry.variants.includes(model.variant)),
+  )
 }
 
-function normalizeEntry(value, kind, fallback, catalog, target) {
-  if (ALIASES.has(value)) return value
-  return normalizeRefValue(value, catalog, target) ?? normalizeRefValue(fallback, catalog, target) ?? fallback
-}
-function normalizeRole(value, kind, fallback, catalog, target) {
-  const entries = value.split(",").map((item) => item.trim()).filter(Boolean)
-  if (!entries.length) return fallback
-  const fallbackEntries = fallback.split(",").map((item) => item.trim()).filter(Boolean)
-  return entries
-    .map((entry, index) => normalizeEntry(entry, kind, fallbackEntries[index] ?? fallbackEntries[0], catalog, target))
-    .join(", ")
+function budgetLabel(budget) {
+  return `# budget: ${budget} (${BUDGETS[budget].code})`
 }
 
-export function normalizeSheet(text, catalog, currentRef) {
-  const parsed = parseSheet(text ?? "")
+export function recommendedSheet(catalog, currentRef, budget = "large") {
   const fallback = fallbacks(catalog, currentRef)
-  const budget = BUDGETS[parsed.budget]
   const lines = [
     "# pstack model configuration for OpenCode. Generated from the models configured on this machine.",
     "# Rerun /setup-pstack to choose different models.",
     "# One line per role. Delete a line to fall back to the skill default.",
     "# `inherit-parent` or `auto`: the role runs on the parent chat model.",
     "# defaults: 3",
-    `# budget: ${parsed.budget} (${budget.code})`,
+    budgetLabel(budget),
   ]
-  if (!parsed.hook) lines.push("# session hook: off")
   for (const role of ROLES) {
-    let raw = parsed.roles[role.key]
-    if (parsed.generated && raw && ALIASES.has(raw.split(",")[0].trim())) raw = undefined
-    const source = raw ?? fallback?.[role.kind]
-    const value = source && catalog.length ? normalizeRole(source, role.kind, fallback[role.kind], catalog, budget[role.kind]) : source
-    lines.push(`${role.key}: ${value ?? "inherit-parent"}`)
+    const refs = fallback?.[role.kind].split(", ").map((ref) => {
+      const variant = chooseVariant(catalog.find((entry) => entry.ref === ref), BUDGETS[budget][role.kind])
+      return variant ? `${ref}#${variant}` : ref
+    })
+    lines.push(`${role.key}: ${refs?.join(", ") ?? "inherit-parent"}`)
   }
   return lines.join("\n") + "\n"
 }
 
-export function recommendedSheet(catalog, currentRef) {
-  return normalizeSheet("", catalog, currentRef)
-}
+export function proposeSheet(saved, catalog, currentRef, { budget, roles = {} }) {
+  if (budget !== undefined && !Object.hasOwn(BUDGETS, budget)) throw new Error("Choose a large, medium, or small budget.")
+  const existing = parseSheet(saved ?? "")
+  const edits = new Map()
+  for (const [key, value] of Object.entries(roles)) {
+    const role = ROLES.find((item) => item.key === key)
+    if (!role) throw new Error(`Unknown model role: ${key}`)
+    if (typeof value !== "string" || /[\r\n]/.test(value)) throw new Error(`Enter one line for ${key}.`)
+    if (value === existing.roles[key]) continue
+    const refs = value.split(",").map((item) => item.trim())
+    if (!["panel", "judge"].includes(role.kind) && refs.length > 1) throw new Error(`Choose one model for ${key}.`)
+    const retained = existing.roles[key]?.split(",").map((item) => item.trim()) ?? []
+    for (const ref of refs) {
+      if (isModelAlias(ref) || availableRef(ref, catalog)) continue
+      const index = retained.indexOf(ref)
+      if (index < 0) throw new Error(`${ref || "(empty)"} is not an available choice for ${key}.`)
+      retained.splice(index, 1)
+    }
+    edits.set(key, refs.join(", "))
+  }
 
-export function roleModel(text, role, catalog) {
-  const parsed = parseSheet(text)
-  const value = parsed.roles[role]
-  if (!value || ALIASES.has(value.split(",")[0].trim())) return undefined
-  const ref = value.split(",")[0].trim()
-  const slash = ref.indexOf("/")
-  if (slash <= 0) return undefined
-  const hash = ref.indexOf("#", slash + 1)
-  const providerID = ref.slice(0, slash)
-  const id = ref.slice(slash + 1, hash === -1 ? undefined : hash)
-  const variant = hash === -1 ? undefined : ref.slice(hash + 1)
-  if (!catalog.some((entry) => entry.ref === (variant ? `${providerID}/${id}` : ref))) return undefined
-  return { providerID, id, ...(variant ? { variant } : {}) }
+  const original = saved ?? recommendedSheet(catalog, currentRef, budget)
+  const changeBudget = saved !== undefined && budget !== undefined && budget !== existing.budget
+  if (!changeBudget && !edits.size) return original
+  const eol = original.includes("\r\n") ? "\r\n" : "\n"
+  const lines = original ? original.split(/\r?\n/) : []
+  const additions = []
+  const replaceLast = (match, line) => {
+    const index = lines.findLastIndex((item) => match(item.trim()))
+    if (index < 0) additions.push(line)
+    else lines[index] = line
+  }
+  if (changeBudget) replaceLast((line) => budgetLine.test(line), budgetLabel(budget))
+  for (const [key, value] of edits) {
+    replaceLast((line) => roleLine.exec(line)?.[1].trim() === key, `${key}: ${value}`)
+  }
+  if (additions.length) lines.splice(lines.at(-1) === "" ? lines.length - 1 : lines.length, 0, ...additions)
+  return lines.join(eol)
 }
 
 export function hookEnabled(text) {

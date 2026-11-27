@@ -1,10 +1,9 @@
-import { readFileSync, statSync } from "node:fs"
 import { modelsPath, portable, vendorRoot } from "./paths.js"
+import { WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
-const models = portable(modelsPath)
-
-export function mapping(root) {
+export function mapping(root, sheetPath = modelsPath) {
   const skills = portable(root)
+  const models = portable(sheetPath)
   return `<pstack_opencode_mapping>
 pstack content is installed unmodified from Lauren Tan's original pstack. Use this mapping only for tools, models, paths, and subagent fields.
 
@@ -17,12 +16,12 @@ Subagents: call \`subagent\` with \`agent\`, \`description\`, \`prompt\`, and op
 - \`readonly: true\` becomes \`agent: "pstack:readonly"\`.
 - \`resume\` means pass the \`sessionID\` returned by the earlier call.
 - \`run_in_background: true\` adds no field. Omit it.
-- \`environment: "cloud"\` has no field. Create a worktree and name its absolute path in the prompt.
+- For a worker assigned its own worktree by the workflow (including translated cloud workers), create or select a registered OpenCode worktree, then call \`${WORKTREE_WORKER_TOOL}\` with its absolute \`directory\` and the same agent, description, prompt, and optional model. If the tool is unavailable or placement fails, report the worker as blocked; do not fall back to native \`subagent\` in the parent checkout.
 - \`cloud_base_branch\` is the worktree base.
-- \`isolation: "worktree"\` has no field. Create the worktree first.
-- A model with effort becomes \`provider/model#variant\`.
+- Ordinary delegation without a worktree still uses native \`subagent\`.
+- For a scoped code handoff or Comment Sicko review, omit \`model\` to use that role's saved choice. Do not confuse the judgment role with the implementation role. Pass other workflow assignments as \`model: "provider/model#variant"\` (leave off \`#variant\` for a base ref). A different model explicitly named by the user takes precedence. For \`inherit-parent\` or \`auto\`, omit \`model\` and keep the workflow's agent and permissions. Keep panel order and alias seats; never use an alias as Arena's cross-judge. Report any assignment that is blocked; do not rewrite the sheet.
 
-Skills: load a skill with the skill tool and an id such as \`pstack-how\` or \`pstack-architect\`. A slash command such as \`/poteto-mode\` already attaches its skill to the message. Skill files live under \`${skills}/skills\`.
+Skills: pass the registered ID or exact skill name to \`skill\`; use \`skill\` for a named skill rather than guessing a playbook filename. A slash command such as \`/poteto-mode\` already attaches its skill to the message. Skill files live under \`${skills}/skills\`.
 
 Cursor's control-ui, control-cli, and deslop are not bundled. Use the matching project verification or review tooling when it exists. If a required capability is unavailable, report the blocked step and what could not be verified; do not mark it complete.
 
@@ -49,30 +48,10 @@ pstack is installed. Invoke the \`pstack-poteto-mode\` skill and follow it when 
 export function methodology(root) {
   return `<pstack_poteto_mode>
 Poteto Mode is the controlling engineering methodology for this session. OpenCode's environment, tools, permissions, and security rules still apply unchanged.
+The user can end it with \`/poteto-mode-exit\`.
 
-Before implementation, use the Playbooks section of \`${portable(root)}/skills/poteto-mode/SKILL.md\` to select the route. Use the attached skill or read the file if the attachment is no longer in context. That skill owns routing, non-negotiables, principles, and subagent rules.
+Before implementation, use the Playbooks section of \`${portable(root)}/skills/poteto-mode/SKILL.md\` to select the route for the whole task, not just its first symptom. Use the attached skill or read the file if the attachment is no longer in context. That skill owns routing, non-negotiables, principles, and subagent rules.
 
 Read the selected playbook or routed workflow skill in full before following its steps. It is the single source of truth for the task's steps, including any conditions or exceptions. If you cannot load it, stop and report the failure instead of proceeding without it.
 </pstack_poteto_mode>`
-}
-
-export const SETUP_OVERRIDE = `<pstack_opencode_setup>
-OpenCode setup override. Write the model sheet to \`${models}\`, not to \`~/.cursor/rules/pstack-models.mdc\`. Write plain Markdown, not an \`.mdc\` rule with \`alwaysApply\`.
-
-Use only the refs in the \`pstack_model_catalog\` below. They are the models actually configured in this OpenCode instance. Ask the user with the \`question\` tool which model to use for each role, offering those exact refs plus \`inherit-parent\`. Write a real ref for every code, prose, judgment, panel, and swarm role. Add the budget variant to each ref, for example \`#xhigh\` for the large budget. For each panel role, write a comma-separated list whose entries come from different providers when the catalog has them. Never write a Cursor slug or a ref that is not in the catalog. Skip Cursor-only steps, such as Bugbot, Custom Modes, and Cursor automations, with a one-line note. Keep the upstream sheet format otherwise: a \`# defaults: 3\` line, a \`# budget\` line, and one line per role.
-</pstack_opencode_setup>`
-
-let cache = { mtimeMs: -1, text: "" }
-
-export function modelsBlock() {
-  try {
-    const stat = statSync(modelsPath)
-    if (stat.mtimeMs !== cache.mtimeMs) {
-      cache = { mtimeMs: stat.mtimeMs, text: readFileSync(modelsPath, "utf8").trim() }
-    }
-    if (!cache.text) return ""
-    return `<pstack_model_sheet>\n${cache.text}\n</pstack_model_sheet>`
-  } catch {
-    return ""
-  }
 }

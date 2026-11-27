@@ -1,8 +1,9 @@
 import { readFileSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { join, dirname, relative } from "node:path"
 import { portable, vendorRoot } from "./paths.js"
 
 export const TODO_TOOL = "pstack_todowrite"
+export const TODO_KEY = "pstack-workflow-todos"
 
 function requiredSkill(text, registered) {
   if (/\b(if|when|unless|only|optional|otherwise|or)\b/i.test(text)) return
@@ -134,20 +135,55 @@ export function checklistWorkflow(call) {
   return call.state.metadata?.pstackWorkflow ?? call.state.input?.workflow
 }
 
+const orderedMessages = (messages) => [...messages].sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
+
 export function currentTurn(messages) {
-  const ordered = [...messages].sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
+  const ordered = orderedMessages(messages)
   return ordered.slice(Math.max(0, ordered.findLastIndex((message) => message.type === "user")))
 }
 
-export function loadedSources(messages, sources) {
+export async function savedChecklist(ctx, sessionID) {
+  const result = await ctx.session.instructions?.entry?.list?.({ sessionID })
+  return (result?.data ?? result)?.find((entry) => entry.key === TODO_KEY)?.value
+}
+
+export function workflowStart(messages, source, saved) {
+  const turn = currentTurn(messages)[0]
+  const current = turn?.type === "user" ? turn.time?.created : undefined
+  if (saved?.workflow !== source.name) return current
+  if (Number.isFinite(saved.startedAt)) return saved.startedAt
+
+  // Older checklists have no start time. Recover only the current run of the selected source.
+  let turnStart, start
+  for (const message of orderedMessages(messages)) {
+    if (message.type === "user") turnStart = message.time?.created
+    for (const call of toolCalls([message])) {
+      if (call.name !== TODO_TOOL || call.state?.status !== "completed" || !Array.isArray(call.state.input?.todos)) continue
+      const workflow = checklistWorkflow(call)
+      if (workflow === source.name) start ??= turnStart
+      else if (workflow) start = undefined
+    }
+  }
+  return start ?? current
+}
+
+export function workflowHistory(messages, startedAt) {
+  return Number.isFinite(startedAt)
+    ? orderedMessages(messages).filter((message) => message.time?.created >= startedAt)
+    : currentTurn(messages)
+}
+
+export function loadedSources(messages, sources, before = Infinity) {
   const paths = new Map([...sources.values()].map((item) => [item.path, item]))
   const byId = new Map([...sources.values()].filter((item) => item.id).map((item) => [item.id, item]))
   const evidence = new Set()
   for (const message of messages) {
-    if (message.type === "skill" && byId.has(message.skill)) evidence.add(byId.get(message.skill).name)
+    if (message.type === "skill" && byId.has(message.skill) &&
+      (before === Infinity || message.time?.created < before)) evidence.add(byId.get(message.skill).name)
     if (message.type !== "assistant") continue
     for (const call of message.content ?? []) {
       if (call.type !== "tool" || call.state?.status !== "completed") continue
+      if (before !== Infinity && !((call.time?.completed ?? message.time?.completed) < before)) continue
       const input = call.state.input
       if (call.name === "read" && typeof input?.path === "string") {
         const item = paths.get(portable(input.path))
@@ -158,8 +194,13 @@ export function loadedSources(messages, sources) {
           evidence.add(item.name)
         }
       } else if (call.name === "skill") {
-        const item = byId.get(input?.id ?? input?.name) ?? sources.get(input?.name)
-        if (item?.id && call.state.metadata?.truncated === false &&
+        const requested = input?.id ?? input?.name
+        const canonical = byId.get(requested)
+        const item = canonical ?? sources.get(requested)
+        const { directory, name, truncated } = call.state.metadata ?? {}
+        const resolvedHere = typeof directory === "string" && typeof item?.path === "string" &&
+          relative(dirname(item.path), directory) === "" && name === item.name
+        if (item?.id && (resolvedHere || canonical && directory === undefined) && truncated === false &&
           call.state.content?.some((part) => part.type === "text" && part.text.includes("</skill_content>"))) {
           evidence.add(item.name)
         }
@@ -184,10 +225,10 @@ export function missingLoad(ids, seen, sources) {
   return [...sources.values()].find((source) => ids.includes(source.id) && !seen.has(source.name))
 }
 
-export function workflowIssue(source, todos, messages, sources, verified = []) {
-  // Older completed steps can be carried after compaction, but reads from an
-  // earlier task do not count as evidence on a newly selected workflow.
-  const loaded = loadedSources(currentTurn(messages), sources)
+export function workflowIssue(source, todos, messages, sources, verified = [], startedAt) {
+  // Carry verified prerequisites on the same workflow; a newly selected
+  // workflow must be grounded in its own turn's evidence.
+  const loaded = loadedSources(workflowHistory(messages, startedAt), sources)
   if (!verified.includes(source.name) && !loaded.has(source.name)) {
     return `Load ${source.path} in full before saving its checklist. No successful full load is visible in this turn.`
   }

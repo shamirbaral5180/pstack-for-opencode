@@ -1,9 +1,8 @@
 import { implementationIssue } from "./implementation.js"
-import { resolveWorkflow, TODO_TOOL, workflowIssue } from "./workflow.js"
+import { deliveryReviewStep, reviewIssue } from "./review.js"
+import { resolveWorkflow, savedChecklist, TODO_KEY, TODO_TOOL, workflowHistory, workflowIssue, workflowStart } from "./workflow.js"
 
 export { TODO_TOOL } from "./workflow.js"
-
-const TODO_KEY = "pstack-workflow-todos"
 
 export function registerTodos(ctx, activeMode, sources) {
   const entries = ctx.session.instructions?.entry
@@ -12,7 +11,7 @@ export function registerTodos(ctx, activeMode, sources) {
   return ctx.tool.transform((editor) => {
     editor.add({
       name: TODO_TOOL,
-      description: "Read or replace the pstack session's todo list. Omit todos to read it. Name the loaded workflow (playbook stem, filename, or playbooks/<file>.md; for a skill use its name or ID). Keep original step IDs and leave IDs off extra items. For a step requiring implementation delegation, save it in progress with paths set to the project-relative files to be implemented, and name those files in the worker's brief. Keep paths on updates. Advancing requires observed worker changes. Report blockers rather than closing unexecuted steps.",
+      description: "Read or replace the pstack session's todo list. Omit todos to read it. Name the loaded workflow (playbook stem, filename, or playbooks/<file>.md; for a skill use its name or ID). Keep original step IDs and leave IDs off extra items. For a step requiring implementation delegation, save it in progress with paths set to the project-relative files to be implemented, and name those files in the worker's brief. Keep paths on updates. The worker must load explicitly required principles before its first implementation change. Advancing requires observed worker changes. Report blockers rather than closing unexecuted steps.",
       options: { codemode: false },
       input: {
         type: "object",
@@ -49,9 +48,7 @@ export function registerTodos(ctx, activeMode, sources) {
           resources: [TODO_KEY],
           save: [TODO_KEY],
         })
-        const result = await entries.list({ sessionID })
-        const list = result?.data ?? result
-        const saved = list.find((entry) => entry.key === TODO_KEY)?.value ?? []
+        const saved = await savedChecklist(ctx, sessionID) ?? []
         if (todos === undefined) return { content: JSON.stringify(saved) }
         let value = todos
         if (mode === "pstack-poteto-mode" || workflow !== undefined || saved.workflow !== undefined) {
@@ -61,11 +58,18 @@ export function registerTodos(ctx, activeMode, sources) {
           const persisted = workflow === undefined && sources.get(saved.workflow)
           const { source, error } = persisted ? { source: persisted } : resolveWorkflow(workflow, sources, messages)
           if (error) throw new Error(error)
-          const check = workflowIssue(source, todos, messages, sources, source.name === saved.workflow ? saved.verified : undefined)
+          const startedAt = workflowStart(messages, source, saved)
+          const check = workflowIssue(source, todos, messages, sources, source.name === saved.workflow ? saved.verified : undefined, startedAt)
           if (typeof check === "string") throw new Error(check)
-          const handoff = await implementationIssue(ctx, { sessionID, source, todos, messages, sources })
+          const scope = { sessionID, source, todos, messages: workflowHistory(messages, startedAt), sources }
+          const handoff = await implementationIssue(ctx, scope)
           if (handoff) throw new Error(`pstack workflow checkpoint: ${handoff}`)
-          value = { workflow: source.name, todos, verified: check.verified }
+          const delivery = deliveryReviewStep(source)
+          if (delivery && todos.some((item) => item.step === delivery.id && item.status === "completed")) {
+            const issue = await reviewIssue(ctx, scope)
+            if (issue) throw new Error(`pstack workflow checkpoint: ${issue}`)
+          }
+          value = { workflow: source.name, todos, verified: check.verified, ...(Number.isFinite(startedAt) && { startedAt }) }
         }
         await entries.put({ sessionID, key: TODO_KEY, value })
         return value.workflow

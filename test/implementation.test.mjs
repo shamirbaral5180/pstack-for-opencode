@@ -37,6 +37,7 @@ const sheet = (status, paths = [file]) => ({
 const spawn = (id = "worker", prompt = `Implement \`${file}\`.`, at = 20, status = "completed") =>
   tool("subagent", { agent: "general", prompt }, at, { status, metadata: { sessionID: id } })
 const write = (path, at, files = [path]) => tool("write", { path: join(directory, path) }, at, { files })
+const report = (text, at) => ({ type: "assistant", time: { created: at }, content: [{ type: "text", text }] })
 
 async function fixture() {
   const messages = [user(1), readFeature(), load("architect", 7), load(leaf, 9)]
@@ -111,12 +112,12 @@ test("writes to open implementation paths and closing the step both need real ch
   f.messages.push(spawn("worker", `Implement ${file} and ${tests}.`))
   f.worker("worker", [tool("shell", { command: "git diff" }, 24, { files: [file, tests] })])
   await assert.rejects(close(), /no attributable worker change/)
-  f.worker("worker", [write(file, 24), write("notes.md", 26, [tests, "notes.md"])])
+  f.worker("worker", [load(leaf, 23), write(file, 24), write("notes.md", 26, [tests, "notes.md"])])
   await attempt(file)
   await assert.rejects(attempt(tests), /no attributable worker change for test\/feature.test.js/)
   await assert.rejects(close(), /no attributable worker change for test\/feature.test.js/)
   assert.equal(f.state[0].value.todos.find((todo) => todo.step === "4").status, "in_progress")
-  f.worker("worker", [write(file, 24), write(tests, 28)])
+  f.worker("worker", [load(leaf, 23), write(file, 24), write(tests, 28)])
   await close()
   await attempt(tests)
 })
@@ -132,10 +133,36 @@ test("an unrelated, failed, unassigned, or stale child can't satisfy the handoff
   f.worker("other", [write(file, 30)], { parentID: "another-session" })
   f.worker("worker", [write(file, 12), write(file, 25, []), tool("edit", { path: file }, 26, { status: "error", files: [file] })])
   await assert.rejects(close(), /no attributable worker change/)
-  f.worker("worker", [write(file, 30)])
+  f.worker("worker", [load(leaf, 29), write(file, 30)])
   await close()
-  f.messages.push(user(60), readFeature(), load("architect", 63), load(leaf, 65))
-  await assert.rejects(f.save(sheet("completed"), 70), /No accepted scope is visible/)
+})
+
+test("a follow-up preserves the scoped write gate and accepts earlier evidence from the same workflow", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn(), user(35), load("figure-it-out", 38))
+  await assert.rejects(f.before("edit", { path: file }), /no attributable worker change/)
+  await f.before("write", { path: "docs/note.md" })
+
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
+  await f.before("edit", { path: file })
+  await f.save(sheet("completed"), 40)
+  assert.equal(f.state[0].value.startedAt, 1)
+  assert.equal(f.state[0].value.workflow, feature.name)
+})
+
+test("a linked worktree worker counts only with observed changes in its confirmed checkout", async () => {
+  const f = await fixture()
+  const checkout = resolve("separate-worktree")
+  const input = { directory: checkout, agent: "general", prompt: `Implement ${file}.` }
+  await assert.rejects(f.before("pstack_worktree_worker", { ...input, sessionID: "ignored" }), /No successful non-empty checklist/)
+  await f.save(sheet("in_progress"), 14)
+  await f.before("pstack_worktree_worker", input)
+  f.messages.push(tool("pstack_worktree_worker", input, 20, { metadata: { sessionID: "worker", directory: checkout } }))
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
+  await assert.rejects(f.save(sheet("completed"), 30), /no attributable worker change/)
+  f.worker("worker", [load(leaf, 24), tool("write", { path: file }, 25, { files: [file] })], { location: { directory: checkout } })
+  await f.save(sheet("completed"), 40)
 })
 
 test("a retrospective declaration can't turn an earlier child change into assigned implementation", async () => {
@@ -179,8 +206,9 @@ test("a reset handoff does not borrow the previous worker's edits", async () => 
   const f = await fixture()
   await f.save(sheet("in_progress"), 14)
   f.messages.push(spawn())
-  f.worker("worker", [write(file, 25)])
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
   await f.save(sheet("completed"), 30)
+  f.messages.push(user(34))
   await f.save(sheet("pending"), 35)
   await f.save(sheet("in_progress"), 40)
   await assert.rejects(f.save(sheet("completed"), 50), /no attributable worker change/)
@@ -193,7 +221,7 @@ test("native checklist remains usable and detected delivery still needs a substa
   const deliver = () => f.before("shell", { command: "git push origin work" })
   await f.before("write", { path: "docs/note.md" })
   await assert.rejects(deliver(), /no attributable worker change/)
-  f.worker("worker", [write(file, 25)])
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
   await deliver()
 })
 
@@ -206,4 +234,63 @@ test("native edit diff is stronger than a shared snapshot; patchText includes re
     tool("edit", { path: tests }, 24, { metadata: { files: [] }, files: [tests] }),
     tool("shell", { command: "git diff" }, 25, { files: [file, tests] }),
   ], directory), [{ path: file, at: 23 }])
+})
+
+test("worker principle verification: the required leaf must be loaded by the worker, not just the main agent", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn("worker", `Implement ${file}.`))
+  f.worker("worker", [write(file, 25)]) // worker implemented but never read the leaf
+  await assert.rejects(f.save(sheet("completed"), 30), /worker did not load the required principle-model-the-domain/)
+  assert.equal(f.state[0].value.todos.find((todo) => todo.step === "4").status, "in_progress")
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
+  await f.save(sheet("completed"), 40)
+})
+
+test("worker principle verification: a cited principle must be loaded in the worker session", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn("worker", `Implement ${file}.`))
+  const cited = report("I applied **prove-it-works** and verified the output.", 26)
+  f.worker("worker", [load(leaf, 24), write(file, 25), cited])
+  await assert.rejects(f.save(sheet("completed"), 30), /cited principle-prove-it-works without loading/)
+  f.worker("worker", [load(leaf, 24), load("principle-prove-it-works", 26), write(file, 25), cited])
+  await f.save(sheet("completed"), 40)
+})
+
+test("worker principle verification ignores natural-language prose and non-implementer children", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn("worker", `Implement ${file}.`), spawn("review", "Review only.", 18))
+  // Natural-language claims are not principle citations, so they trigger nothing.
+  f.worker("worker", [load(leaf, 24), write(file, 25),
+    report("I proved it works end to end and the domain is modeled cleanly.", 26)])
+  // A reviewer with no file changes is never required to load a principle.
+  f.worker("review", [report("I applied **prove-it-works** while reading.", 30)])
+  await f.save(sheet("completed"), 40)
+})
+
+test("worker principle verification: an explicit brief requirement is enforced even when the playbook names none", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn("worker", `Implement ${file} and follow the **prove-it-works** principle.`))
+  f.worker("worker", [load(leaf, 24), write(file, 25)])
+  await assert.rejects(f.save(sheet("completed"), 30), /worker did not load the required principle-prove-it-works/)
+  f.worker("worker", [load(leaf, 24), load("principle-prove-it-works", 23), write(file, 25)])
+  await f.save(sheet("completed"), 40)
+})
+
+test("a read completed after the first scoped edit does not validate it, even across a follow-up", async () => {
+  const f = await fixture()
+  await f.save(sheet("in_progress"), 14)
+  f.messages.push(spawn())
+  const source = sources.get(leaf)
+  const read = tool("read", { path: source.path }, 22, { metadata: { truncated: false } })
+  read.content[0].state.content = [{ type: "text", text: `Read file ${source.path}, lines 1-${source.lineCount}\n...` }]
+  read.content[0].time.completed = 26
+  f.worker("worker", [read, write(file, 25), write(file, 28)])
+  f.messages.push(user(34))
+  await assert.rejects(f.save(sheet("completed"), 40), /loaded principle-model-the-domain too late/)
+  await assert.rejects(f.before("edit", { path: file }), /loaded principle-model-the-domain too late/)
+  assert.equal(f.state[0].value.todos.find((todo) => todo.step === "4").status, "in_progress")
 })

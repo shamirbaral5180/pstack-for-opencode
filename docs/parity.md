@@ -26,7 +26,7 @@ Substitutions:
 - `Task`/`Agent` to `subagent`, `AskUserQuestion` to `question`, `TodoWrite` to `todowrite`
 - `subagent_type`, `generalPurpose`, bare `poteto-agent` and `comment-sicko`, `readonly`
 - `run_in_background` removed because OpenCode subagents always run in the background
-- `environment: "cloud"` to git worktree instructions; `cloud_base_branch` to worktree base
+- worktree-backed worker requests to a registered OpenCode worktree and `pstack_worktree_worker`; `cloud_base_branch` to worktree base
 - Cursor model defaults to `inherit-parent` or the role sheet
 - Arena family rules to provider-prefix rules
 - `/loop` to OpenCode automation instructions
@@ -52,10 +52,10 @@ The adapter adds:
 - a session-scoped `pstack_todowrite` checklist for every active pstack session. It saves model-authored todos as session instructions, with a `blocked` status and an OpenCode permission check. Native `todowrite` is hidden for the session because it cannot carry `workflow`, step IDs, or implementation `paths`; using one structured tool keeps prerequisite and handoff validation identical on every host.
 - checklist validation at the todo boundary. The main agent names its selected source. Numbered playbook steps and phase headings come from the vendored text. Steps that mandate a skill (`use`/`run`/`apply` the **x** skill, or `per **x**`) require a successful in-turn load before the checklist advances past them; conditional clauses (`if`, `when`, `unless`, `optional`) are never promoted. A failed check names the missing entry or load and leaves the saved checklist unchanged.
 - mandatory implementation handoff for playbooks whose steps delegate code to a subagent (feature, bug-fix, perf-issue, refactoring, hillclimb). A spawn or a worker's self-report is not an implementation change. The checklist requires the step to be saved in progress with distinct project-relative implementation `paths`, the mandatory principle leaf loaded, and the files named in the worker's brief; an attributable worker edit/write/patch whose diff (or matching snapshot for a plain write) touches a declared path satisfies it.
-- a main-session `tool.execute.before` checkpoint for direct mutation, new delegation, and recognized Git/forge commands. It checks the current turn's observed source loads, successful todo writes, and handoff evidence before the requested action. A confirmed gap produces a tool error with the source and prerequisite to complete. A shell or Code Mode step whose shared snapshot shows workspace changes is reported as an observation in the next context, never attributed to a writer or blocked.
+- a main-session `tool.execute.before` checkpoint for direct mutation, new delegation, and recognized Git/forge commands. Once a structured checklist is accepted, follow-up turns use its selected workflow and scope; a new route requires a successfully validated checklist. Handoff proof still comes from the available transcript for that workflow, not from a saved `completed` label. Explicitly required worker principles must have a successful load before the first attributable implementation change. A shell or Code Mode step whose shared snapshot shows workspace changes is reported as an observation in the next context, never attributed to a writer or blocked.
 - a compaction hook that records the active mode so the post-compaction summary stays grounded
 - session activation recorded in a session instruction entry, so the mode survives a plugin reload mid-session
-- a normalized model sheet
+- a model sheet preserved as saved, with a preview and confirmation before setup writes
 - a model catalog with cost, context, status, and current-model marker
 
 `pstack:readonly` and `pstack:comment-sicko` start from `*:deny` and allow only `read`, `grep`, `glob`, and `webfetch`. They cannot edit, write, run shell, ask the user, or spawn a subagent.
@@ -71,20 +71,19 @@ The adapter adds:
 | `readonly: true` | `agent: "pstack:readonly"` |
 | `resume` | pass the returned `sessionID` |
 | `run_in_background: true` | no field; subagents always run in the background |
-| `isolation: "worktree"` | create a git worktree first |
+| `isolation: "worktree"` | select a registered OpenCode worktree and start the child with `pstack_worktree_worker` |
 | `model` plus effort | `provider/model#variant` |
 
 ## Setup and models
 
-`/setup-pstack` reads the real models, injects a catalog, writes a normalized sheet, and applies the budget variant only to refs that have no chosen variant. A chosen `#low` or `#high` survives a budget change.
+`/setup-pstack` reads the saved sheet and the current model catalog without writing. The proposal tool previews the exact new sheet. Only `/setup-pstack apply <token>` in the session that staged it saves the proposal; it rejects one based on an older version of the sheet.
 
-- A missing sheet gets real refs and distinct providers for panels.
-- An existing sheet keeps valid choices, fills missing roles, rejects Cursor slugs and unknown refs, and rewrites atomically.
-- A generated sheet that still says `inherit-parent` is replaced with real refs.
-- The budget selects the target effort: `large` uses xhigh for code, `medium` high, `small` medium. Each ref takes the nearest available variant at or below the target.
+- A missing sheet gets recommended refs, with diverse providers for panels when available.
+- An existing sheet keeps its literal refs, variants, role omissions, panel order and aliases unless the proposal edits them explicitly. Missing catalog entries are flagged, not replaced.
+- The budget selects the starting effort for recommendations: `large` uses xhigh for code, `medium` high, `small` medium. Recommendations take the nearest available variant at or below the target.
 - `# session hook: off` disables routing and sheet injection.
 - The context hook reads the sheet on every request, so `/setup-pstack` changes apply without a restart.
-- The `experimental.model.resolve` hook switches a subagent to the sheet's role model when the provider matches, unless the session has an explicit model. OpenCode only allows that hook to switch within the selected provider. A cross-provider role model must be passed in the `subagent` call's `model` field, which is what pstack's playbooks already ask for.
+- The selected workflow passes its chosen model to native `subagent` or, for a worktree assignment, `pstack_worktree_worker`. The plugin does not rewrite agent defaults or override model resolution. `inherit-parent` and `auto` keep the parent model.
 
 Live result on this machine:
 
@@ -115,10 +114,9 @@ A child session with `agent: pstack:poteto-agent` ran on `opencode/tidepool-alph
 
 ## Packaging
 
-- 580 files, 3.3 MB packed, 6.8 MB unpacked.
-- Nested `node_modules` under `statechart/scripts` is excluded by npm; `postinstall` installs all dependencies and verifies `fast-check`.
-- `prepack` regenerates data and runs the parity gate.
-- `npm run check` runs verify, translation audit, and all 27 tests.
+- `npm run pack:beta` builds the versioned npm archive from the package file list, then extracts and strictly verifies the whole vendored snapshot. `npm run pack:check` runs the same check without keeping the archive. A release uses the verified `.tgz`, not the output of npm's default directory packing.
+- The archive includes the original Statechart dependencies. OpenCode can install it without a lifecycle hook or a separate dependency download. `scripts/verify.mjs --installed` also verifies all bytes after npm's extraction-time rename of the vendored `.gitignore` to `.npmignore`.
+- `npm run check` runs source verification, the translation audit, and the unit suite.
 - `npm run sync` excludes the workspace `AGENTS.md`, which is not upstream.
 
 ## Known gaps
@@ -140,17 +138,23 @@ After the native-`todowrite` fix, two further runs with `experimental.todo: true
 Remaining limitations, unchanged by this fix: the checkpoint is evidence rather than a security boundary, so it cannot attribute arbitrary shell/`execute`/Code-Mode writes, prove a loaded skill was *applied*, or stop a model that never saves a checklist or declares scope (an undetermined route leaves writes undecided). Independent review remains agent discretion, not a forced step. Plugin tool input schemas are advisory: the structured checklist accepts extra step IDs outside its declared pattern because OpenCode does not enforce plugin input schemas server-side.
 
 - OpenCode has no marketplace or `/add-plugin`. Install is `opencode plugin add` or the `plugins` array.
-- OpenCode has no Custom Modes. The slash command activates the methodology for a session, the context hook injects it on every call, and a session instruction entry keeps it active through follow-ups, compaction, and plugin reloads.
-- True per-subagent worktree isolation needs a custom spawn tool. The translated swarm skill uses `git worktree add` and absolute paths; the child session still starts in the parent's directory.
+- OpenCode has no Custom Modes. The slash command activates the methodology for a session and a session instruction entry keeps it active through follow-ups, compaction, and plugin reloads. `/poteto-mode-exit` removes that session's pstack entries and restores native behavior without changing preferences, conversation history, or other sessions.
+- Native `subagent` still starts in the parent's directory. For worktree-backed delegation the adapter creates a linked child, moves it, waits for OpenCode to confirm its directory, and only then sends the brief. If placement fails, it never sends the brief or falls back to the parent checkout. This is placement, not a sandbox for absolute paths or arbitrary shell commands. The calling coordinator still chooses the agent, model, scope, and whether the upstream workflow calls for separate worktrees.
 - Cursor `/loop` wake semantics are approximated with automations.
 - Bugbot and Cursor's managed cloud agents need external integrations.
 - Cursor model families only exist when those providers are configured. Panels use available providers.
-- A cross-provider role change for a subagent needs an explicit `model` at spawn, or a plugin reload for the agent default. The resolve hook can only switch within the selected provider.
+- A concrete role assignment, including a different provider, uses OpenCode's explicit `model` at spawn.
 - `benny` automations are vendored but not installed.
 
 ## Workflow acceptance
 
 Run cases individually with a hard deadline for each case and its requests. Save the parent and child evidence before interrupting only sessions created by that case. Distinguish confirmed compliance failures from ambiguous route selection, missing capabilities, and execution timeouts. A deadline after delegation but before review is not a workflow pass.
+
+A scripted OpenCode 2.4.1 regression tested a real follow-up prompt without re-reading the selected playbook. The parent write to a scoped file was blocked, as was checklist completion after a child wrote the files and only then loaded the required leaf. A fresh worker read the leaf before changing either file and the handoff was accepted. The resulting behavior passed an independent `node --test`; a plain session was unaffected. This is evidence for the checkpoints, not a full methodology acceptance run.
+
+A separate scripted OpenCode 2.4.1 fixture dispatched two linked worktree workers in one turn. Each child transcript recorded the location change before its first prompt; `pwd` and a relative write agreed with that location. The coordinator received both background results and its handoff accepted the two changes. Independent Git and file checks found only the assigned write in each worktree and a clean, unchanged parent checkout. A third, stale worktree entry failed placement before any worker prompt or model request. This verifies the adapter sequence, not natural workflow selection or filesystem sandboxing.
+
+The OpenCode 2.4.1 model and exit fixture kept the saved sheet byte-for-byte through preview and a confirmation attempted from another session. A matching confirmation changed only the requested budget and role. Child sessions and their assistant messages recorded distinct Feature and Bug Fix models. Perf Issue (`inherit-parent`), Hillclimb (`auto`), and an explicit request for the parent's model all kept the parent model and variant. After `/poteto-mode-exit`, the next request had the same tools as a plain session and native `todowrite` succeeded. The pstack entries were removed, an unrelated instruction survived, another Poteto session remained active, and re-entry began without the previous checklist. These are scripted integration checks, not evidence of uncoached workflow selection.
 
 | Case | Evidence to require |
 | --- | --- |

@@ -9,10 +9,10 @@ import agents from "../src/data/agents.js"
 import commands from "../src/data/commands.js"
 import skills from "../src/data/skills.js"
 import { formatCatalog, modelCatalog, vendorFamily } from "../src/models.js"
-import { MANDATE, SETUP_OVERRIDE, mapping, methodology } from "../src/overlay.js"
+import { MANDATE, mapping, methodology } from "../src/overlay.js"
 import { portable, vendorRoot } from "../src/paths.js"
-import { ensureModelSheet } from "../src/setup.js"
-import { hookEnabled, normalizeSheet, recommendedSheet } from "../src/sheet.js"
+import { MODEL_PROPOSAL_TOOL } from "../src/setup.js"
+import { hookEnabled, proposeSheet, recommendedSheet } from "../src/sheet.js"
 import { translateText } from "../src/translate.js"
 import { TODO_TOOL } from "../src/todos.js"
 
@@ -72,6 +72,7 @@ function mockContext(options = {}) {
     agents: [],
     hooks: [],
     prompts: [],
+    synthetic: [],
     session: { parentID: undefined },
     sessions: {},
     models: CATALOG,
@@ -123,6 +124,7 @@ function mockContext(options = {}) {
       get: async (input) => ({ data: registered.sessions[input?.sessionID] ?? registered.session }),
       context: async () => ({ data: registered.messages }),
       prompt: async (input) => registered.prompts.push(input),
+      synthetic: async (input) => registered.synthetic.push(input),
       instructions: {
         entry: {
           list: async (input) => ({ data: registered.instructionEntries[input?.sessionID] ?? [] }),
@@ -132,7 +134,9 @@ function mockContext(options = {}) {
             if (existing) existing.value = input.value
             else list.push({ key: input.key, value: input.value })
           },
-          remove: async () => {},
+          remove: async ({ sessionID, key }) => {
+            registered.instructionEntries[sessionID] = (registered.instructionEntries[sessionID] ?? []).filter((item) => item.key !== key)
+          },
         },
       },
     },
@@ -146,12 +150,12 @@ test("registers every skill, command, and agent", async () => {
   await plugin.setup(ctx)
 
   assert.equal(registered.skills.length, 60)
-  assert.equal(registered.commands.length, 60)
+  assert.equal(registered.commands.length, 61)
   assert.equal(registered.agents.length, 3)
-  assert.equal(registered.hooks.length, 3)
+  assert.equal(registered.hooks.length, 2)
   assert.deepEqual(
     registered.hooks.map((hook) => hook.name).sort(),
-    ["compaction", "context", "experimental.model.resolve"],
+    ["compaction", "context"],
   )
 })
 
@@ -320,9 +324,10 @@ test("the adapter reports missing todo tooling instead of directing agents to a 
   assert.deepEqual(event.tools, { read: {} })
 })
 
-test("explicit variants survive the budget", () => {
-  const text = normalizeSheet("# budget: large (xhigh)\nbug-fix: alpha/one#low\n", CATALOG, "alpha/one")
+test("explicit variants survive an unrelated budget change", () => {
+  const text = proposeSheet("# budget: large (xhigh)\nbug-fix: alpha/one#low\n", CATALOG, "alpha/one", { budget: "small" })
   assert.match(text, /bug-fix: alpha\/one#low/)
+  assert.match(text, /budget: small/)
 })
 
 test("every command maps to a registered skill and has a unique name", () => {
@@ -348,7 +353,12 @@ test("running a command attaches its skill and keeps the user text", async () =>
   assert.equal(prompt.sessionID, "s1")
 })
 
-test("setup writes real model refs, budget variants, and panel diversity", async () => {
+const invoke = (registered, name, sessionID, text = "") =>
+  registered.commands.find((item) => item.name === name).execute({ sessionID, prompt: { text }, delivery: "steer" })
+const proposalTool = (registered) => registered.tools.find((tool) => tool.name === MODEL_PROPOSAL_TOOL)
+const applyText = (proposal) => /\/setup-pstack (apply [a-f0-9]{16})/.exec(proposal.content)[1]
+
+test("setup recommends real models but only the session-specific confirmation writes them", async () => {
   const directory = mkdtempSync(join(tmpdir(), "pstack-setup-"))
   const target = join(directory, "pstack-models.md")
   try {
@@ -356,56 +366,57 @@ test("setup writes real model refs, budget variants, and panel diversity", async
     registered.session = { model: { providerID: "alpha", id: "one" } }
     await plugin.setup(ctx)
 
-    const command = registered.commands.find((item) => item.name === "setup-pstack")
-    await command.execute({ sessionID: "s1", prompt: { text: "" }, delivery: "steer" })
+    await invoke(registered, "setup-pstack", "s1")
 
     const prompt = registered.prompts.at(-1)
     assert.equal(prompt.skills[0].id, "pstack-setup-pstack")
-    assert.ok(prompt.text.includes(SETUP_OVERRIDE))
     assert.ok(prompt.text.includes("<pstack_model_catalog>"))
     assert.ok(prompt.text.includes("current"))
-
-    assert.ok(existsSync(target))
+    assert.ok(!existsSync(target))
+    const tool = proposalTool(registered)
+    await assert.rejects(tool.execute({}, { sessionID: "other" }), /Start \/setup-pstack/)
+    const proposal = await tool.execute({ roles: { "bug-fix": "auto" } }, { sessionID: "s1" })
+    assert.ok(!existsSync(target))
+    await invoke(registered, "setup-pstack", "s1", "preview")
+    assert.equal(registered.synthetic.at(-1).text, proposal.content)
+    await invoke(registered, "setup-pstack", "other", applyText(proposal))
+    await invoke(registered, "setup-pstack", "s1", "apply wrong")
+    assert.ok(!existsSync(target))
+    await invoke(registered, "setup-pstack", "s1", applyText(proposal))
     const sheet = readFileSync(target, "utf8")
     assert.match(sheet, /feature, refactoring: alpha\/one#xhigh/)
     assert.match(sheet, /judgment and prose: beta\/two#high/)
     assert.match(sheet, /arena runners: alpha\/one#high, beta\/two#high, gamma\/three/)
     assert.match(sheet, /arena cross-judge pool: beta\/two#high, gamma\/three/)
     assert.match(sheet, /swarm workers: alpha\/one#high/)
-    assert.ok(!/^[a-z][a-z, -]*: inherit-parent$/m.test(sheet))
-
-    const poteto = registered.agents.find((agent) => agent.id === "pstack:poteto-agent")
-    assert.deepEqual(poteto.model, { providerID: "alpha", id: "one", variant: "xhigh" })
-    const sicko = registered.agents.find((agent) => agent.id === "pstack:comment-sicko")
-    assert.deepEqual(sicko.model, { providerID: "beta", id: "two", variant: "high" })
+    assert.match(sheet, /bug-fix: auto/)
+    assert.ok(registered.agents.every((agent) => agent.model === undefined))
+    await invoke(registered, "setup-pstack", "s1", applyText(proposal))
+    assert.match(registered.synthetic.at(-1).text, /No matching/)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
 
-test("normalization keeps valid choices, fills missing roles, and rejects Cursor slugs", () => {
-  const sheet = `# budget: large (xhigh)
-feature, refactoring: alpha/one
-bug-fix: claude-opus-5-5-xhigh-fast
-judgment and prose: beta/two#high
-`
-  const text = normalizeSheet(sheet, CATALOG, "alpha/one")
-  assert.match(text, /feature, refactoring: alpha\/one#xhigh/)
-  assert.match(text, /bug-fix: alpha\/one#xhigh/)
-  assert.match(text, /judgment and prose: beta\/two#high/)
-  assert.match(text, /perf-issue: alpha\/one#xhigh/)
-  assert.ok(!text.includes("claude"))
-})
-
-test("a generated sheet replaces inherit-parent with real refs", () => {
+test("a generated sheet preserves aliases, literal refs, unavailable refs and panel order", () => {
   const sheet = `# pstack model configuration for OpenCode. Generated from the models configured on this machine.
 # budget: large (xhigh)
 feature, refactoring: inherit-parent
-bug-fix: inherit-parent
+bug-fix: auto
+judgment and prose: alpha/one
+arena runners: auto, gone/retired#high, alpha/one#low, inherit-parent
 `
-  const text = normalizeSheet(sheet, CATALOG, "alpha/one")
-  assert.match(text, /feature, refactoring: alpha\/one#xhigh/)
-  assert.match(text, /bug-fix: alpha\/one#xhigh/)
+  assert.equal(proposeSheet(sheet, CATALOG, "alpha/one", {}), sheet)
+  const next = proposeSheet(sheet, CATALOG, "alpha/one", { roles: { "judgment and prose": "beta/two" } })
+  assert.equal(next, sheet.replace("judgment and prose: alpha/one", "judgment and prose: beta/two"))
+  const panel = "auto, gone/retired#high, beta/two, inherit-parent"
+  assert.match(proposeSheet(sheet, CATALOG, "alpha/one", { roles: { "arena runners": panel } }),
+    /arena runners: auto, gone\/retired#high, beta\/two, inherit-parent/)
+  assert.throws(() => proposeSheet(sheet, CATALOG, "alpha/one", { roles: { "arena runners": `${panel}, gone/retired#high` } }),
+    /not an available choice/)
+  for (const ref of ["unknown/model", "alpha/one#max", "claude-opus-5-5-xhigh-fast"]) {
+    assert.throws(() => proposeSheet(sheet, CATALOG, "alpha/one", { roles: { "bug-fix": ref } }), /not an available choice/)
+  }
 })
 
 test("recommended sheet uses real refs and never writes inherit-parent", () => {
@@ -419,17 +430,34 @@ test("session hook off is honored", () => {
   assert.equal(hookEnabled("# defaults: 3\n"), true)
 })
 
-test("ensureModelSheet updates an existing sheet in place", () => {
+test("setup never mutates existing preferences on rerun, cancel, or stale confirmation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "pstack-sheet-"))
   const target = join(directory, "pstack-models.md")
   try {
-    writeFileSync(target, "# budget: large (xhigh)\nfeature, refactoring: claude-opus-5-5-xhigh-fast\n")
-    const result = ensureModelSheet(target, CATALOG, "alpha/one")
-    assert.equal(result.created, false)
-    assert.equal(result.updated, true)
-    const text = readFileSync(target, "utf8")
-    assert.match(text, /feature, refactoring: alpha\/one#xhigh/)
-    assert.ok(!text.includes("claude"))
+    const saved = "# personal note\r\nfeature, refactoring: inherit-parent\r\nbug-fix: gone/retired\r\n"
+    writeFileSync(target, saved)
+    const { ctx, registered } = mockContext({ modelsPath: target })
+    await plugin.setup(ctx)
+    await invoke(registered, "setup-pstack", "s1")
+    assert.match(registered.prompts.at(-1).text, /Unavailable.*\n- bug-fix: gone\/retired/)
+    const input = { roles: { "bug-fix": "auto" } }
+    const call = { sessionID: "s1" }
+    const tool = proposalTool(registered)
+    const first = await tool.execute(input, call)
+    await invoke(registered, "setup-pstack", "s1", "cancel")
+    await invoke(registered, "setup-pstack", "s1", applyText(first))
+    assert.equal(readFileSync(target, "utf8"), saved)
+    await invoke(registered, "setup-pstack", "s1")
+    const second = await tool.execute(input, call)
+    const external = `${saved}# external change\r\n`
+    writeFileSync(target, external)
+    await invoke(registered, "setup-pstack", "s1", applyText(second))
+    assert.equal(readFileSync(target, "utf8"), external)
+    assert.match(registered.synthetic.at(-1).text, /Nothing was saved/)
+    await invoke(registered, "setup-pstack", "s1")
+    const third = await tool.execute(input, call)
+    await invoke(registered, "setup-pstack", "s1", applyText(third))
+    assert.equal(readFileSync(target, "utf8"), external.replace("gone/retired", "auto"))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -453,7 +481,8 @@ test("poteto-mode sessions receive mapping, methodology, and the model sheet", a
     assert.ok(text.includes("<pstack_opencode_mapping>"))
     assert.ok(text.includes("<pstack_poteto_mode>"))
     assert.ok(text.includes("<pstack_model_sheet>"))
-    assert.ok(text.includes("feature, refactoring: alpha/one#xhigh"))
+    assert.ok(text.includes("feature, refactoring: alpha/one\n"))
+    assert.ok(!text.includes("bug-fix:"))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -519,49 +548,61 @@ test("compaction records the active mode for a poteto-mode session", async () =>
   assert.match(event.messages[0].text, /Poteto Mode/)
 })
 
-test("resolve hook switches within a provider and leaves explicit or cross-provider models", async () => {
+test("exit restores native tools in just this session, survives reload, and permits a fresh activation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "pstack-resolve-"))
   const target = join(directory, "pstack-models.md")
   try {
-    writeFileSync(target, "# budget: large (xhigh)\nbug-fix: alpha/one#low\n")
-    const { ctx, registered } = mockContext({ modelsPath: target })
-    registered.session = { parentID: "root" }
+    const sheet = "feature, refactoring: inherit-parent\nbug-fix: alpha/one#low\n"
+    writeFileSync(target, sheet)
+    const options = { modelsPath: target }
+    const { ctx, registered } = mockContext(options)
     await plugin.setup(ctx)
-    const resolve = registered.hooks.find((hook) => hook.name === "experimental.model.resolve")
-
-    const same = {
-      sessionID: "child",
-      agent: "pstack:poteto-agent",
-      kind: "primary",
-      model: { providerID: "alpha", id: "one", variant: "xhigh" },
-      system: [],
+    for (const sessionID of ["exit", "stay"]) {
+      await invoke(registered, "poteto-mode", sessionID)
+      await ctx.session.instructions.entry.put({ sessionID, key: "pstack-workflow-todos", value: [] })
+      await ctx.session.instructions.entry.put({ sessionID, key: "user-instruction", value: "keep" })
     }
-    await resolve.callback(same)
-    assert.equal(same.model.variant, "low")
-
-    writeFileSync(target, "# budget: large (xhigh)\nbug-fix: beta/two#high\n")
-    const cross = {
-      sessionID: "child",
-      agent: "pstack:poteto-agent",
-      kind: "primary",
-      model: { providerID: "alpha", id: "one", variant: "high" },
-      system: [],
+    await invoke(registered, "setup-pstack", "exit")
+    const proposal = await proposalTool(registered).execute({ roles: { "bug-fix": "auto" } }, { sessionID: "exit" })
+    const hooks = async ({ hooks }, sessionID) => {
+      const event = { sessionID, agent: "build", messages: [], system: [],
+        tools: { todowrite: {}, subagent: {}, [TODO_TOOL]: {}, pstack_worktree_worker: {}, [MODEL_PROPOSAL_TOOL]: {} } }
+      for (const { callback } of hooks) await callback(event)
+      return event
     }
-    await resolve.callback(cross)
-    assert.deepEqual(cross.model, { providerID: "alpha", id: "one", variant: "high" })
-
-    writeFileSync(target, "# budget: large (xhigh)\nbug-fix: alpha/one#low\n")
-    registered.sessions = { parent: { model: { providerID: "gamma", id: "three" } } }
-    registered.session = { parentID: "parent", model: { providerID: "beta", id: "two" } }
-    const explicit = {
-      sessionID: "child",
-      agent: "pstack:poteto-agent",
-      kind: "primary",
-      model: { providerID: "beta", id: "two", variant: "high" },
-      system: [],
+    const active = await hooks(registered, "exit")
+    assert.ok(!active.tools.todowrite && active.tools[TODO_TOOL] && active.tools[MODEL_PROPOSAL_TOOL])
+    const promptCount = registered.prompts.length
+    await invoke(registered, "poteto-mode-exit", "exit")
+    assert.match(registered.synthetic.at(-1).text, /Poteto Mode is off/)
+    assert.equal(registered.prompts.length, promptCount)
+    assert.deepEqual(registered.instructionEntries.exit, [{ key: "user-instruction", value: "keep" }])
+    await invoke(registered, "setup-pstack", "exit", applyText(proposal))
+    assert.equal(readFileSync(target, "utf8"), sheet)
+    const reloaded = mockContext(options)
+    reloaded.registered.instructionEntries = registered.instructionEntries
+    await plugin.setup(reloaded.ctx)
+    const initial = '<context key="user-instruction">\nkeep\n</context>'
+    const snapshot = `${initial}\n<context key="pstack-active">\npstack-poteto-mode\n</context>\n<context key="pstack-workflow-todos">\n{"todos":[]}\n</context>`
+    for (const hook of reloaded.registered.hooks) {
+      const event = { sessionID: "exit", system: [{ type: "text", text: snapshot }], messages: [] }
+      await hook.callback(event)
+      assert.equal(event.system[0].text.trim(), initial)
     }
-    await resolve.callback(explicit)
-    assert.deepEqual(explicit.model, { providerID: "beta", id: "two", variant: "high" })
+    for (const registration of [registered, reloaded.registered]) {
+      const exited = await hooks(registration, "exit")
+      assert.deepEqual(exited.tools, { todowrite: {}, subagent: {} })
+      assert.deepEqual(exited.system, [])
+      assert.deepEqual(exited.messages, [])
+      const other = await hooks(registration, "stay")
+      assert.ok(!other.tools.todowrite && other.tools[TODO_TOOL] && other.tools.pstack_worktree_worker)
+      assert.match(other.system[0].text, /pstack_poteto_mode/)
+      assert.match(other.messages[0].text, /Poteto Mode/)
+    }
+    await assert.rejects(registered.tools.find(({ name }) => name === TODO_TOOL).execute({}, { sessionID: "exit" }), /active pstack/)
+    await invoke(reloaded.registered, "poteto-mode", "exit")
+    assert.ok((await hooks(reloaded.registered, "exit")).tools[TODO_TOOL])
+    assert.ok(!registered.instructionEntries.exit.some(({ key }) => key === "pstack-workflow-todos"))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -591,6 +632,7 @@ test("mapping covers subagent fields and Cursor paths without a fake background 
     "There is no `background` field",
     "pstack:readonly",
     "pstack:comment-sicko",
+    "pstack_worktree_worker",
     "sessionID",
     ".opencode/agents/",
     ".opencode/commands/",
@@ -600,6 +642,17 @@ test("mapping covers subagent fields and Cursor paths without a fake background 
     assert.ok(MAPPING.includes(needle), `mapping is missing ${needle}`)
   }
   assert.ok(!MAPPING.includes("`background: true`"))
+})
+
+test("translated Swarm and Arena use native placement for worktree workers only", () => {
+  for (const name of ["swarm", "arena"]) {
+    const text = translateText(skills.find((skill) => skill.name === name).content, "ROOT")
+    assert.match(text, /registered OpenCode worktree/)
+    assert.match(text, /`pstack_worktree_worker`/)
+    assert.match(text, /(?:blocked|fails)/)
+  }
+  const feature = readFileSync(join(vendorRoot, "skills/poteto-mode/playbooks/feature.md"), "utf8")
+  assert.doesNotMatch(translateText(feature, "ROOT"), /pstack_worktree_worker/)
 })
 
 test("catalog reports cost, context, status, and the current model", async () => {

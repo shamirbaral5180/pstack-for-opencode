@@ -4,17 +4,16 @@ import { registerCompliance } from "./compliance.js"
 import agents from "./data/agents.js"
 import commands from "./data/commands.js"
 import skills from "./data/skills.js"
-import { currentModelRef, formatCatalog, modelCatalog } from "./models.js"
-import { MANDATE, SETUP_OVERRIDE, mapping, methodology } from "./overlay.js"
-import { modelsPath, portable } from "./paths.js"
-import { ensureModelSheet } from "./setup.js"
+import { registerDispatch } from "./dispatch.js"
+import { MANDATE, mapping, methodology } from "./overlay.js"
+import { modelsPath } from "./paths.js"
+import { MODEL_PROPOSAL_TOOL, registerModelSetup, SETUP_SKILL } from "./setup.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
-import { hookEnabled, normalizeSheet, readSheet, roleModel } from "./sheet.js"
+import { hookEnabled, readSheet } from "./sheet.js"
 import { registerTodos, TODO_TOOL, todoMapping } from "./todos.js"
 import { ensureTranslated, translateText } from "./translate.js"
-import { workflowSources } from "./workflow.js"
-
-const SETUP = "setup-pstack"
+import { TODO_KEY, workflowSources } from "./workflow.js"
+import { registerWorktreeWorker, WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
 const DENY = { action: "*", resource: "*", effect: "deny" }
 const ALLOW = (action) => ({ action, resource: "*", effect: "allow" })
@@ -44,47 +43,16 @@ const READONLY = {
   permissions: READ_ONLY,
 }
 
-const sameModel = (left, right) =>
-  left?.providerID === right?.providerID &&
-  left?.id === right?.id &&
-  (left?.variant ?? undefined) === (right?.variant ?? undefined)
-
 const MODE_KEY = "pstack-active"
 const POTETO = "pstack-poteto-mode"
+const EXIT = "poteto-mode-exit"
 
-async function applyAgentModels(ctx, sheetText, catalog) {  const model =
-    roleModel(sheetText, "bug-fix", catalog) ?? roleModel(sheetText, "feature, refactoring", catalog)
-  const review = roleModel(sheetText, "judgment and prose", catalog)
-  const wanted = [
-    ["pstack:poteto-agent", model],
-    ["pstack:comment-sicko", review],
-    ["pstack:readonly", review],
-  ].filter(([, ref]) => ref !== undefined)
-  if (!wanted.length) return
-  await ctx.agent?.transform((editor) => {
-    for (const [id, ref] of wanted) {
-      if (!editor.get(id)) continue
-      editor.update(id, (entry) => {
-        entry.model = ref
-      })
-    }
-  })
-  await ctx.agent?.reload?.()
-}
-
-async function commandText(ctx, command, input, sheetPath, catalog) {
-  const task = input.prompt.text.trim() || `Run the ${command.name} skill.`
-  if (command.name !== SETUP) return task
-
-  const current = await currentModelRef(ctx, input.sessionID)
-  const sheet = ensureModelSheet(sheetPath, catalog, current)
-  await applyAgentModels(ctx, readSheet(sheetPath), catalog)
-  const state = sheet.created
-    ? `A model sheet was written to ${portable(sheet.path)} from the configured models.`
-    : sheet.updated
-      ? `The model sheet at ${portable(sheet.path)} was normalized and updated.`
-      : `The model sheet at ${portable(sheet.path)} is current.`
-  return [SETUP_OVERRIDE, formatCatalog(catalog, current), state, task].filter(Boolean).join("\n\n")
+function removeModeSnapshot(system) {
+  // OpenCode can keep the initial instruction entries in the request's system snapshot.
+  const owned = new RegExp(`<context key="(?:${MODE_KEY}|${TODO_KEY})">\\r?\\n[\\s\\S]*?\\r?\\n</context>`, "g")
+  for (const part of system ?? []) {
+    if (part.type === "text") part.text = part.text.replace(owned, "")
+  }
 }
 
 export default {
@@ -92,46 +60,56 @@ export default {
 
   async setup(ctx) {
     const sheetPath = typeof ctx.options?.modelsPath === "string" ? ctx.options.modelsPath : modelsPath
-    const catalog = await modelCatalog(ctx)
-    const sheetText = readSheet(sheetPath)
+    const setup = await registerModelSetup(ctx, sheetPath)
 
-    // sessionID -> skill id, for sessions that have activated a pstack skill. This
-    // is the fast in-memory signal; the durable source is the session instruction
-    // entry set alongside it, so a plugin reload mid-session does not drop the mode.
+    const entries = ctx.session.instructions?.entry
     const activeModes = new Map()
     const setMode = async (sessionID, skillId) => {
       activeModes.set(sessionID, skillId)
       try {
-        await ctx.session?.instructions?.entry?.put({ sessionID, key: MODE_KEY, value: skillId })
+        await entries?.put?.({ sessionID, key: MODE_KEY, value: skillId })
       } catch {
         // experimental instruction entries are a durability bonus, not a dependency
       }
     }
     const getMode = async (sessionID) => {
-      const cached = activeModes.get(sessionID)
-      if (cached) return cached
       try {
-        const result = await ctx.session?.instructions?.entry?.list({ sessionID })
-        const entries = result?.data ?? result ?? []
-        const entry = entries.find((item) => item.key === MODE_KEY)
-        if (entry?.value) {
-          activeModes.set(sessionID, entry.value)
-          return entry.value
+        if (entries?.list) {
+          const result = await entries.list({ sessionID })
+          const value = (result?.data ?? result).find((item) => item.key === MODE_KEY)?.value
+          if (value) activeModes.set(sessionID, value)
+          else activeModes.delete(sessionID)
+          return value
         }
-      } catch {
-        // fall through: the in-memory signal is authoritative for the current process
+      } catch {}
+      return activeModes.get(sessionID)
+    }
+    const exitMode = async (sessionID) => {
+      if (entries?.list) {
+        const result = await entries.list({ sessionID })
+        const saved = result?.data ?? result
+        for (const key of [TODO_KEY, MODE_KEY]) {
+          if (saved.some((item) => item.key === key)) await entries.remove({ sessionID, key })
+        }
       }
-      return undefined
+      activeModes.delete(sessionID)
+      setup.cancel(sessionID)
+      await ctx.session.synthetic({
+        sessionID,
+        text: "Poteto Mode is off for this session. Continue with normal OpenCode behavior. Run /poteto-mode to start a new workflow.",
+      })
     }
 
     const translated = ensureTranslated()
-    const MAPPING = mapping(translated.root)
+    const MAPPING = mapping(translated.root, sheetPath)
     const METHODOLOGY = methodology(translated.root)
     const allSkills = [...skills, { ...LOOP_SKILL, path: join(translated.root, LOOP_SKILL.source) }]
     const allCommands = [...commands, LOOP_COMMAND]
     const activeTodoMode = async (sessionID) => hookEnabled(readSheet(sheetPath)) ? getMode(sessionID) : undefined
     const sources = workflowSources(translated.root, skills)
     await registerTodos(ctx, activeTodoMode, sources)
+    await registerWorktreeWorker(ctx, activeTodoMode)
+    await registerDispatch(ctx, { active: activeTodoMode, sources, skills: allSkills, sheet: () => readSheet(sheetPath) })
     const observeWorkspace = await registerCompliance(ctx, async (sessionID) => (await activeTodoMode(sessionID)) === POTETO, sources)
 
     await ctx.skill.transform((editor) => {
@@ -142,26 +120,32 @@ export default {
           name: skill.name,
           description: skill.description,
           path: join(translated.root, skill.source),
-          content: skill.id === "pstack-setup-pstack" ? SETUP_SKILL_BODY : translateText(skill.content, translated.root),
+          content: skill.id === SETUP_SKILL ? SETUP_SKILL_BODY : translateText(skill.content, translated.root),
           ...(skill.autoinvoke === undefined ? {} : { autoinvoke: skill.autoinvoke }),
         })
       }
     })
 
     await ctx.command.transform((editor) => {
+      editor.add({
+        name: EXIT,
+        description: "Exit Poteto Mode and restore normal OpenCode behavior for this session.",
+        execute: ({ sessionID }) => exitMode(sessionID),
+      })
       for (const command of allCommands) {
         editor.add({
           name: command.name,
           description: command.description,
           execute: async (input) => {
-            if (command.skillId !== "pstack-setup-pstack" && (await getMode(input.sessionID)) !== POTETO) {
+            if (command.skillId === SETUP_SKILL) return setup.command(input)
+            if ((await getMode(input.sessionID)) !== POTETO) {
               await setMode(input.sessionID, command.skillId)
             }
             const attached = input.prompt.skills ?? []
             const already = attached.some((item) => item.id === command.skillId)
             await ctx.session.prompt({
               sessionID: input.sessionID,
-              text: await commandText(ctx, command, input, sheetPath, catalog),
+              text: input.prompt.text.trim() || `Run the ${command.name} skill.`,
               files: input.prompt.files,
               agents: input.prompt.agents,
               skills: already ? attached : [{ id: command.skillId }, ...attached],
@@ -193,8 +177,6 @@ export default {
       }
     })
 
-    await applyAgentModels(ctx, sheetText, catalog)
-
     // Poteto Mode is controlling only for sessions that activated a pstack skill
     // (or pstack subagents). Every other session keeps OpenCode's default
     // behavior, so the plugin does not leak routing into unrelated work.
@@ -204,7 +186,10 @@ export default {
       const mode = await getMode(event.sessionID)
       const currentSheet = mode ? readSheet(sheetPath) : ""
       const hookOn = hookEnabled(currentSheet)
+      if (event.tools && (isPstackAgent || !setup.isActive(event.sessionID))) delete event.tools[MODEL_PROPOSAL_TOOL]
       if (event.tools && (!mode || isPstackAgent || !hookOn)) delete event.tools[TODO_TOOL]
+      if (event.tools && (!mode || isPstackAgent || !hookOn || !event.tools.subagent)) delete event.tools[WORKTREE_WORKER_TOOL]
+      if (!mode) removeModeSnapshot(event.system)
       if (!isPstackAgent && !mode) return
 
       const parts = [MAPPING]
@@ -216,8 +201,7 @@ export default {
           const observation = await observeWorkspace?.(event.sessionID)
           if (observation) parts.push(`<pstack_workspace_observation>\n${observation}\n</pstack_workspace_observation>`)
         }
-        const normalized = currentSheet.trim() ? normalizeSheet(currentSheet, catalog) : ""
-        if (normalized) parts.push(`<pstack_model_sheet>\n${normalized.trim()}\n</pstack_model_sheet>`)
+        if (currentSheet.trim()) parts.push(`<pstack_model_sheet>\n${currentSheet.trim()}\n</pstack_model_sheet>`)
       }
       const text = parts.filter(Boolean).join("\n\n")
       if (text) event.system.push({ type: "text", text })
@@ -227,7 +211,10 @@ export default {
     // is the active methodology so the post-compaction transcript stays grounded.
     await ctx.session.hook("compaction", async (event) => {
       const mode = await getMode(event.sessionID)
-      if (!mode) return
+      if (!mode) {
+        removeModeSnapshot(event.system)
+        return
+      }
       const label = mode === POTETO ? "Poteto Mode (pstack)" : "pstack"
       try {
         if (Array.isArray(event.messages)) {
@@ -243,33 +230,5 @@ export default {
       }
     })
 
-    await ctx.session.hook("experimental.model.resolve", async (event) => {
-      if (event.kind !== "primary") return
-      if (!["pstack:poteto-agent", "pstack:comment-sicko", "pstack:readonly"].includes(event.agent)) return
-      const currentSheet = readSheet(sheetPath)
-      if (!hookEnabled(currentSheet)) return
-      let explicit = false
-      try {
-        const result = await ctx.session.get({ sessionID: event.sessionID })
-        const session = result?.data ?? result
-        if (session?.model) {
-          if (session.parentID) {
-            const parentResult = await ctx.session.get({ sessionID: session.parentID })
-            const parent = parentResult?.data ?? parentResult
-            explicit = parent?.model !== undefined && !sameModel(parent.model, session.model)
-          } else {
-            explicit = true
-          }
-        }
-      } catch {}
-      if (explicit) return
-      const normalized = normalizeSheet(currentSheet, catalog)
-      const role =
-        event.agent === "pstack:poteto-agent"
-          ? roleModel(normalized, "bug-fix", catalog) ?? roleModel(normalized, "feature, refactoring", catalog)
-          : roleModel(normalized, "judgment and prose", catalog)
-      // The resolve hook may only switch to a model from the same provider.
-      if (role && role.providerID === event.model.providerID) event.model = role
-    })
   },
 }

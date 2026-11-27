@@ -23,20 +23,28 @@ function walk(directory) {
   return files
 }
 
-const actual = walk(vendorRoot).sort()
-const listed = Object.keys(manifest.files).sort()
-const actualKeys = actual.map((file) => relative(vendorRoot, file).split(sep).join("/"))
+const installed = process.argv.includes("--installed")
+const renameGitIgnore = installed && !existsSync(join(vendorRoot, ".gitignore"))
+const vendorPath = (file) => {
+  const key = relative(vendorRoot, file).split(sep).join("/")
+  // npm renames .gitignore on extraction. Still require its original bytes.
+  return renameGitIgnore && key === ".npmignore" ? ".gitignore" : key
+}
+const actual = new Map(walk(vendorRoot).map((file) => [vendorPath(file), file]))
+const listed = Object.keys(manifest.files)
+const actualKeys = [...actual.keys()]
 
-if (actual.length !== manifest.fileCount) failures.push(`file count ${actual.length} != manifest ${manifest.fileCount}`)
+if (actual.size !== manifest.fileCount) failures.push(`file count ${actual.size} != manifest ${manifest.fileCount}`)
 const missing = actualKeys.filter((key) => manifest.files[key] === undefined)
-const extra = listed.filter((key) => !actualKeys.includes(key))
+const extra = listed.filter((key) => !actual.has(key))
 if (missing.length) failures.push(`files not in manifest: ${missing.slice(0, 5).join(", ")}`)
 if (extra.length) failures.push(`manifest files missing on disk: ${extra.slice(0, 5).join(", ")}`)
 
 const combined = createHash("sha256")
 let bytes = 0
-for (const file of actual) {
-  const key = relative(vendorRoot, file).split(sep).join("/")
+for (const key of listed) {
+  const file = actual.get(key)
+  if (!file) continue
   const data = readFileSync(file)
   const hash = createHash("sha256").update(data).digest("hex")
   if (manifest.files[key] !== hash) failures.push(`hash drift ${key}`)

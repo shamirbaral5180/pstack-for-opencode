@@ -17,14 +17,15 @@ import { dirname, join } from "node:path"
 import { LOOP_SKILL } from "./adapter.js"
 import { vendorRoot } from "./paths.js"
 import { SETUP_SKILL_BODY } from "./setup-skill.js"
+import { WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
 const CACHE_BASE = join(homedir(), ".local", "share", "opencode", "pstack-translated")
-const TRANSLATION_VERSION = 19
+const TRANSLATION_VERSION = 22
 
 const SWARM_ORIGINAL =
   'Spawn all N workers in one message with `subagent_type: generalPurpose`, `environment: "cloud"`, `run_in_background: true`, and the step 3 model, left unset for `auto` or `inherit-parent`. Use `environment: "local"` only when the worker needs access to something on the user\'s computer.'
 const SWARM_REPLACEMENT =
-  'Create one git worktree per worker with `git worktree add`, then spawn all N workers in one message with `agent: "general"` and the step 3 model, left unset for `auto` or `inherit-parent`. Give each brief its worktree\'s absolute path and require commands to run there.'
+  `Create one registered OpenCode worktree per worker, then spawn all N workers in one message with \`${WORKTREE_WORKER_TOOL}\`, \`agent: "general"\`, the assigned worktree's absolute \`directory\`, and the step 3 model, left unset for \`auto\` or \`inherit-parent\`. If placement fails, report that worker as blocked; do not spawn it in the shared checkout.`
 
 // Cursor-only concepts that have no OpenCode equivalent. These run first, so the
 // generic token replacements below cannot mangle the sentence around them.
@@ -66,7 +67,7 @@ const OPENCODE_CONCEPTS = [
   ],
   [
     "- Cursor's docs list Custom Modes in the Agents Window and the CLI. Elsewhere, start each new task with `/poteto-mode`.",
-    "- Start each new task with `/poteto-mode`. There is no separate mode switcher.",
+    "- Start Poteto Mode with `/poteto-mode` and leave it in this session with `/poteto-mode-exit`.",
   ],
   [
     "Link [Cursor's skills docs](https://cursor.com/docs/skills) when this comes up.",
@@ -105,6 +106,14 @@ const OPENCODE_CONCEPTS = [
 const TEXT_REPLACEMENTS = [
   ...OPENCODE_CONCEPTS,
   [SWARM_ORIGINAL, SWARM_REPLACEMENT],
+  [
+    "a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`",
+    "a registered OpenCode worktree where possible, otherwise a separate scratch directory",
+  ],
+  [
+    "Spawn all N subagents in one message with `run_in_background: true`, each with the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected.",
+    `Spawn all N subagents in one message, each with the task, the path to the shared grounding, its own output path, and instructions to produce the artifact and a short rationale naming the alternatives it considered and what it rejected. Start worktree candidates with \`${WORKTREE_WORKER_TOOL}\` and their assigned \`directory\`. If placement fails, do not substitute the parent checkout.`,
+  ],
   [
     "Spawn one Task subagent with `subagent_type: generalPurpose` and `readonly: true` that explores and explains in one pass.",
     'Spawn one `subagent` with `agent: "pstack:readonly"` that explores and explains in one pass.',
@@ -161,6 +170,7 @@ const TEXT_REPLACEMENTS = [
   ["control-cli", "the project verification skill"],
   ["/loop", "an OpenCode automation"],
   ["An `auto` or `inherit-parent` entry is the parent model, so omit `model` and spawn `generalPurpose`.", 'An `auto` or `inherit-parent` entry runs on the parent model, so omit `model` and use `agent: "general"`.'],
+  ["A line of `inherit-parent` or `auto` runs the role on the parent model, so omit `model` and spawn `generalPurpose`, because `poteto-agent` defaults to Opus 5.5.", "A line of `inherit-parent` or `auto` runs the role on the parent model, so omit `model` and keep the workflow's agent and permissions."],
   ["spawn `generalPurpose`", 'spawn `agent: "general"`'],
   ["`generalPurpose`", '`agent: "general"`'],
   ["generalPurpose", 'agent: "general"'],
@@ -206,7 +216,7 @@ const PROSE_REPLACEMENTS = [
   [/`an OpenCode automation`/g, "an automation"],
   [
     /the code role model always runs its `-fast` slug\./g,
-    "the code role model always runs its fastest available variant.",
+    "use the selected OpenCode model variant; there is no separate fast suffix.",
   ],
   [
     /A the configured provider seat runs at `inherit-parent` unless its line names another level\./g,

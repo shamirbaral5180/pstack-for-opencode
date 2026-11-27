@@ -1,9 +1,10 @@
 import { implementationIssue, isMutation, mutationTargets, workspaceNotice } from "./implementation.js"
-import { checklistWorkflow, currentTurn, loadedSources, missingLoad, pastStep, TODO_TOOL, toolCalls } from "./workflow.js"
+import { checklistWorkflow, currentTurn, loadedSources, missingLoad, pastStep, savedChecklist, TODO_TOOL, toolCalls, workflowHistory, workflowStart } from "./workflow.js"
+import { WORKTREE_WORKER_TOOL } from "./worktree-worker.js"
 
 export function actionFor(tool, input) {
   if (isMutation(tool)) return "mutation"
-  if (tool === "subagent" && !input?.sessionID) return "delegation"
+  if (tool === WORKTREE_WORKER_TOOL || (tool === "subagent" && !input?.sessionID)) return "delegation"
   if (tool !== "shell" || typeof input?.command !== "string") return
   const command = input.command.trim()
   // A script, pipeline or compound command is not a reliable indicator of intent.
@@ -31,8 +32,14 @@ export function observedActions(messages) {
   })
 }
 
-function workflowState(messages, sources) {
+function workflowState(messages, sources, saved) {
   const recent = currentTurn(messages)
+  const persisted = sources.get(saved?.workflow)
+  if (persisted?.steps.length && Array.isArray(saved.todos)) {
+    const history = workflowHistory(messages, workflowStart(messages, persisted, saved))
+    const seen = new Set([...loadedSources(history, sources), ...(saved.verified ?? [])])
+    return { status: "observed", recent, history, seen, route: persisted, todos: saved.todos, native: false }
+  }
   // If the ledger is incomplete, absence of an event is not evidence.
   if (recent[0]?.type !== "user") return { status: "unknown" }
   const seen = loadedSources(recent, sources)
@@ -46,13 +53,13 @@ function workflowState(messages, sources) {
   const choices = [...routingEvidence].map((name) => sources.get(name)).filter((source) => source.steps.length)
   const route = declared ? choices.find((source) => source.name === declared) : choices.length === 1 ? choices[0] : undefined
   if (!route) return { status: "ambiguous" }
-  return { status: "observed", recent, seen, route, todos: checklist?.state.input.todos, native: checklist?.name === "todowrite" }
+  return { status: "observed", recent, history: recent, seen, route, todos: checklist?.state.input.todos, native: checklist?.name === "todowrite" }
 }
 
-export function inspectAction(action, messages, sources) {
-  const state = workflowState(messages, sources)
+export function inspectAction(action, messages, sources, saved) {
+  const state = workflowState(messages, sources, saved)
   if (state.status !== "observed") return state
-  const { recent, seen, route, todos } = state
+  const { history, seen, route, todos } = state
   const violation = (message) => ({ status: "violation", message })
   if (!todos?.length) {
     return violation(`Before ${action}, record the checklist required by ${route.path}. No successful non-empty checklist write is visible in this turn. Use the available todo tool first.`)
@@ -79,8 +86,8 @@ export function inspectAction(action, messages, sources) {
   if (action === "review" && review) {
     const reviewer = /^\d+\. Spawn `Task` with `subagent_type: "([\w-]+)"`/m.exec(review.text)?.[1]
     if (reviewer) {
-      const loadedAt = recent.findIndex((message) => loadedSources([message], sources).has(review.name))
-      const delegated = observedActions(recent.slice(loadedAt + 1))
+      const loadedAt = history.findIndex((message) => loadedSources([message], sources).has(review.name))
+      const delegated = observedActions(history.slice(loadedAt + 1))
         .some((receipt) => receipt.action === "delegation" && receipt.agent === `pstack:${reviewer}`)
       if (!delegated) {
         return violation(`Before review, follow ${review.path}: no ${reviewer} child session is visible after the skill was loaded. Run the review step or report its blocker.`)
@@ -102,13 +109,14 @@ export async function registerCompliance(ctx, isActive, sources) {
     const messages = response?.data ?? response
     return Array.isArray(messages) ? messages : []
   }
+  const checklist = (sessionID) => savedChecklist(ctx, sessionID).catch(() => undefined)
   if (ctx.tool?.hook) {
     await ctx.tool.hook("execute.before", async (event) => {
       const { sessionID, tool, input } = event
       const action = actionFor(tool, input)
       if (!action || event.agent?.startsWith("pstack:") || !(await isActive(sessionID))) return
-      const messages = await context(sessionID)
-      const result = inspectAction(action, messages, sources)
+      const [messages, saved] = await Promise.all([context(sessionID), checklist(sessionID)])
+      const result = inspectAction(action, messages, sources, saved)
       if (result.status === "violation") throw new Error(`pstack workflow checkpoint: ${result.message}`)
       if (result.status !== "observed" || !result.route.steps.some((step) => step.handoff)) return
       const delivery = ["opening-pr", "push"].includes(action)
@@ -118,15 +126,15 @@ export async function registerCompliance(ctx, isActive, sources) {
       if (session?.parentID) return
       const targets = delivery ? undefined : mutationTargets(tool, input, session?.location?.directory ?? ctx.location?.directory)
       const issue = await implementationIssue(ctx, {
-        sessionID, session, source: result.route, todos: result.todos, messages, sources, targets, delivery, native: result.native,
+        sessionID, session, source: result.route, todos: result.todos, messages: result.history, sources, targets, delivery, native: result.native,
       })
       if (issue) throw new Error(`pstack workflow checkpoint: ${issue}`)
     })
   }
 
   return async (sessionID) => {
-    const messages = await context(sessionID)
-    const state = workflowState(messages, sources)
+    const [messages, saved] = await Promise.all([context(sessionID), checklist(sessionID)])
+    const state = workflowState(messages, sources, saved)
     return workspaceNotice(state.recent ?? currentTurn(messages), state.route, state.todos)
   }
 }

@@ -3,7 +3,7 @@ import test from "node:test"
 import { actionFor, inspectAction, observedActions, registerCompliance } from "../src/compliance.js"
 import skills from "../src/data/skills.js"
 import { ensureTranslated } from "../src/translate.js"
-import { loadedSources, resolveWorkflow, TODO_TOOL, workflowIssue, workflowRequirements, workflowSources } from "../src/workflow.js"
+import { loadedSources, resolveWorkflow, TODO_TOOL, workflowIssue, workflowRequirements, workflowSources, workflowStart } from "../src/workflow.js"
 
 const sources = workflowSources(ensureTranslated().root, skills)
 const feature = sources.get("playbooks/feature.md")
@@ -125,6 +125,18 @@ test("the pre-tool gate uses the canonical selection, not raw aliases or inciden
   const result = inspectAction("mutation", [...trace, skill("architect")], sources)
   assert.equal(result.route, feature)
   assert.equal(result.status, "observed")
+})
+
+test("legacy checklist start follows the last explicit route change, not the latest user message", () => {
+  const select = (source, at) => ({
+    ...action(TODO_TOOL, { workflow: source.name, todos: checklist(source) }),
+    time: { created: at },
+  })
+  const later = (created) => ({ type: "user", time: { created } })
+  const trace = [user, select(feature, 4), later(10), select(figure, 11), later(20),
+    select(feature, 21), later(30), select(feature, 31)]
+  assert.equal(workflowStart(trace, feature, { workflow: feature.name }), 20)
+  assert.equal(workflowStart(trace, figure, { workflow: feature.name }), 30)
 })
 
 test("only a complete skill tool result is evidence of a leaf load", () => {

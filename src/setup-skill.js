@@ -4,7 +4,7 @@
 // cache at the same path the registration points to.
 export const SETUP_SKILL_BODY = `# Setup pstack
 
-Write \`~/.config/opencode/pstack-models.md\`, the model sheet that sets pstack's model per role. The sheet is read fresh on every request, so changes apply without a restart.
+Configure the per-role model sheet at the path reported by \`/setup-pstack\`. If this skill was loaded on its own, first ask the user to run \`/setup-pstack\` to see the saved choices and available models. The sheet is read fresh on every pstack request.
 
 ## Roles
 
@@ -28,12 +28,15 @@ Name the current budget when the sheet records one. With no sheet, \`large\` mat
 
 ## Assign models
 
-1. Read the model catalog in this prompt. Use only those refs, written as \`provider/model\` or \`provider/model#variant\`.
-2. For each role, pick a ref from the catalog. Prefer different providers for the panels and the judge pool. The judge must come from a provider other than the parent chat model's.
-3. Apply the budget's target effort to each ref. The ladder is \`xhigh\` > \`high\` > \`medium\` > \`low\`. \`large\` keeps the default, \`medium\` lowers it one step, \`small\` lowers it two. Take the model's nearest variant at or below the target; a model with no variants keeps its base ref.
-4. \`inherit-parent\` or \`auto\` means the role runs on the parent chat model. These never change with the budget.
+1. Read the catalog and the saved choices in the setup prompt. Show the current roles and flag unavailable choices; do not replace them without asking. Offer confirmed \`provider/model\` and \`provider/model#variant\` refs, plus \`inherit-parent\` and \`auto\`.
+2. Preserve the user's existing refs, variants, panel order and aliases unless the user asks to change them. The budget supplies target effort for recommendations; show any proposed change to an existing variant explicitly. For recommendations, take the nearest available variant at or below the target. A model with no suitable variant keeps its base ref.
+3. Both aliases run on the parent chat model. They count as panel seats but cannot cross-judge. Prefer different model families on panels, and order the cross-judge pool by preference.
 
-## Write
+## Preview and confirm
 
-Write \`~/.config/opencode/pstack-models.md\` as plain Markdown: a \`# defaults: 3\` line, a \`# budget: <label> (<effort>)\` line, and one line per role. Never write a ref that is not in the catalog. Overwrite the whole file so re-runs stay idempotent.
+Use \`pstack_propose_models\` with the requested budget and only the role overrides the user wants. Without a saved sheet, omitted roles start from the budget recommendations. On a rerun, omission keeps the saved value, or leaves the role unset if it was unset.
+
+Show the proposed changes and relay the exact \`/setup-pstack apply <token>\` command returned by the tool. The user must run that command in this session to save. They can inspect the exact proposal with \`/setup-pstack preview\` or discard it with \`/setup-pstack cancel\`. Never edit the sheet directly, run the confirmation for the user, or say a preview was saved.
+
+After setup, if the project lacks an app verification skill or harness, offer once to set one up. If it lacks formal verification, offer once to create a formal verification skill. Do not start either without agreement.
 `
